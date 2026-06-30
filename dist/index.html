@@ -526,6 +526,21 @@ function calcTeamRunRatio(weekStart) {
 }
 
 // ===== TOML PARSER (minimal) =====
+// Strip TOML comments (# ...) but only outside quoted strings
+function stripComment(line) {
+  let inStr = false, strCh = '';
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (inStr) {
+      if (c === strCh && line[i-1] !== '\\') inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = true; strCh = c; continue; }
+    if (c === '#') return line.substring(0, i).trim();
+  }
+  return line.trim();
+}
+
 // Handles the subset needed for our schema
 function parseTOML(text) {
   const result = {};
@@ -536,9 +551,8 @@ function parseTOML(text) {
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     let line = lines[i].trim();
-    // Remove comments
-    const commentIdx = line.indexOf('#');
-    if (commentIdx >= 0) line = line.substring(0, commentIdx).trim();
+    // Remove comments (only outside quoted strings)
+    line = stripComment(line);
     if (!line) continue;
     
     // Array of tables [[...]]
@@ -573,11 +587,34 @@ function parseTOML(text) {
     if (kvMatch) {
       const key = kvMatch[1].trim();
       let val = kvMatch[2].trim();
+      // Handle multi-line arrays/tables: if value starts with [ or { but doesn't close, keep reading
+      while ((val.startsWith('[') || val.startsWith('{')) && !isBalanced(val)) {
+        i++;
+        if (i >= lines.length) break;
+        let nextLine = stripComment(lines[i].trim());
+        val += ' ' + nextLine;
+      }
       const target = currentArrayTable || currentTable;
       target[key] = parseTOMLValue(val);
     }
   }
   return result;
+}
+
+// Check if brackets/braces are balanced (ignoring strings)
+function isBalanced(str) {
+  let depth = 0, inStr = false, strCh = '';
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (inStr) {
+      if (c === strCh && str[i-1] !== '\\') inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = true; strCh = c; continue; }
+    if (c === '[' || c === '{') depth++;
+    else if (c === ']' || c === '}') depth--;
+  }
+  return depth === 0;
 }
 
 function parseTOMLValue(val) {
@@ -2156,7 +2193,7 @@ function importPlanning(text, mode) {
       store.planning[key] = {
         state: entry.state || 'filled',
         away: entry.away_type ? { type: entry.away_type, note: entry.away_note || '' } : null,
-        projects: entry.projects || [],
+        projects: Array.isArray(entry.projects) ? entry.projects : [],
         run: !!entry.run
       };
     });
