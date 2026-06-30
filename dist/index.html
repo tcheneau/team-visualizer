@@ -1,0 +1,2435 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Activity Visualizer</title>
+<style>
+/* ===== RESET & BASE ===== */
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,sans-serif;font-size:14px;line-height:1.4;--font-mono:'SF Mono','Fira Code','Cascadia Code',monospace}
+body{background:var(--bg);color:var(--fg);min-height:100vh;overflow-x:hidden}
+a{color:var(--accent)}button{cursor:pointer;font:inherit;border:1px solid var(--border);background:var(--surface);color:var(--fg);padding:4px 12px;border-radius:4px;transition:background .15s}button:hover{background:var(--surface-hover)}button:active{background:var(--surface-active)}button.primary{background:var(--accent);color:#fff;border-color:var(--accent)}button.primary:hover{filter:brightness(1.1)}button.danger{background:var(--danger);color:#fff;border-color:var(--danger)}input,select,textarea{font:inherit;border:1px solid var(--border);background:var(--input-bg);color:var(--fg);padding:4px 8px;border-radius:4px;width:100%}input:focus,select:focus,textarea:focus{outline:2px solid var(--accent);outline-offset:-1px}
+h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-size:1rem;font-weight:600}
+/* ===== LAYOUT ===== */
+#app{display:flex;flex-direction:column;min-height:100vh}
+#topbar{display:flex;align-items:center;gap:8px;padding:8px 16px;background:var(--surface);border-bottom:1px solid var(--border);flex-wrap:wrap;position:sticky;top:0;z-index:100}
+#topbar .logo{font-weight:700;font-size:1.1rem;margin-right:8px}
+#topbar .nav-btn{padding:4px 10px;font-size:.85rem}
+#topbar .nav-btn.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+#topbar .spacer{flex:1}
+#topbar .topbar-right{display:flex;align-items:center;gap:6px}
+#main{flex:1;padding:12px 16px;overflow-x:auto}
+#statusbar{padding:4px 16px;font-size:.8rem;color:var(--fg-muted);border-top:1px solid var(--border);background:var(--surface);display:flex;justify-content:space-between}
+/* ===== OVERLAY / MODAL ===== */
+.overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:200;display:flex;align-items:center;justify-content:center}
+.overlay.hidden{display:none}
+.modal{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:20px;max-width:600px;width:90%;max-height:80vh;overflow-y:auto;box-shadow:0 8px 32px rgba(0,0,0,.3)}
+.modal h2{margin-bottom:12px}
+.modal .form-row{margin-bottom:10px}
+.modal .form-row label{display:block;font-size:.85rem;color:var(--fg-muted);margin-bottom:2px}
+.modal .form-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:16px}
+/* ===== ONBOARDING ===== */
+#onboarding{text-align:center;padding:60px 20px;max-width:600px;margin:0 auto}
+#onboarding h1{margin-bottom:16px}
+#onboarding p{margin-bottom:12px;color:var(--fg-muted)}
+#onboarding .actions{display:flex;gap:12px;justify-content:center;margin-top:24px;flex-wrap:wrap}
+/* ===== TEAM GRID ===== */
+.grid-container{overflow-x:auto}
+.grid-table{border-collapse:collapse;width:100%;min-width:600px}
+.grid-table th,.grid-table td{border:1px solid var(--border);padding:2px;text-align:center;vertical-align:middle;font-size:.75rem}
+.grid-table th{background:var(--surface);position:sticky;top:0;z-index:2;font-weight:600;padding:4px 6px}
+.grid-table th.person-col{text-align:left;min-width:120px;position:sticky;left:0;z-index:3;background:var(--surface)}
+.grid-table td.person-col{text-align:left;min-width:120px;position:sticky;left:0;z-index:1;background:var(--bg);font-weight:500;cursor:pointer}
+.grid-table td.person-col:hover{color:var(--accent)}
+.grid-table .day-header{font-size:.7rem;white-space:nowrap}.grid-table .week-header{font-size:.7rem;white-space:nowrap}
+.grid-table .half-day{min-width:44px;height:22px;border-radius:2px;cursor:pointer;position:relative;flex-shrink:0;overflow:hidden;font-size:7px;line-height:1;text-align:center;user-select:none}
+.grid-table .half-day:hover{outline:2px solid var(--accent);outline-offset:-1px;z-index:1}
+.grid-table .half-day .cell-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:1px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.grid-table .half-day.not-filled{background:var(--slot-empty);border:1px dashed var(--border)}
+.grid-table .half-day.not-filled .cell-label{color:var(--fg-muted);opacity:.5;font-size:8px}
+.grid-table .half-day.undetermined{background:var(--slot-undetermined);background-image:repeating-linear-gradient(45deg,transparent,transparent 2px,var(--slot-undetermined-line) 2px,var(--slot-undetermined-line) 4px)}
+.grid-table .half-day.away{background:var(--slot-away)}
+.grid-table .half-day.away .cell-label{color:#fff;opacity:.9}
+.grid-table .half-day.project{background:var(--slot-project)}
+.grid-table .half-day.project .cell-label{color:#fff;opacity:.9}
+.grid-table .half-day.run{background:var(--slot-run)}
+.grid-table .half-day.run .cell-label{color:#fff;opacity:.9}
+.grid-table .half-day.project.run{background:linear-gradient(135deg,var(--slot-project) 50%,var(--slot-run) 50%)}
+.grid-table .half-day.project.run .cell-label{color:#fff;opacity:.9}
+.grid-table td.week-start,.grid-table th.week-start{border-left:3px solid var(--accent)!important}
+.grid-table .half-day.selected{outline:2px solid var(--accent);outline-offset:0;z-index:5;opacity:.6}
+.grid-table .half-day.in-range{outline:1px solid var(--accent);outline-offset:0;z-index:4}
+.grid-table .half-day.merged-start{border-radius:3px 0 0 3px}
+.grid-table .half-day.merged-mid{border-left:none;border-radius:0}
+.grid-table .half-day.merged-end{border-radius:0 3px 3px 0}
+.grid-table .summary-row td{font-size:.7rem;padding:4px 6px}
+.grid-table .summary-row .bar{display:inline-block;height:8px;border-radius:4px;margin:0 2px}
+/* ===== INDIVIDUAL VIEW ===== */
+.indiv-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.indiv-header .person-info{display:flex;align-items:center;gap:8px}
+.indiv-header .person-info .avatar{font-size:1.5rem;width:36px;height:36px;display:flex;align-items:center;justify-content:center;border-radius:50%}
+.indiv-grid{width:100%}
+.indiv-grid td{padding:4px 8px;border:1px solid var(--border);font-size:.8rem}
+.indiv-grid .slot-cell{min-width:80px;padding:6px 8px;border-radius:4px;text-align:center;font-size:.75rem}
+.indiv-grid .slot-cell.away{background:var(--slot-away);color:#fff}
+.indiv-grid .slot-cell.project{background:var(--slot-project);color:#fff}
+.indiv-grid .slot-cell.run{background:var(--slot-run);color:#fff}
+.indiv-grid .slot-cell.project.run{background:linear-gradient(135deg,var(--slot-project) 50%,var(--slot-run) 50%);color:#fff}
+.indiv-grid .slot-cell.undetermined{background:var(--slot-undetermined);background-image:repeating-linear-gradient(45deg,transparent,transparent 2px,var(--slot-undetermined-line) 2px,var(--slot-undetermined-line) 4px)}
+.indiv-grid .slot-cell.not-filled{background:var(--slot-empty);border:1px dashed var(--border);color:var(--fg-muted)}
+/* ===== RUN COVERAGE ===== */
+.run-view .week-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px}
+.run-view .week-card .week-title{font-weight:600;margin-bottom:6px}
+.run-view .week-card .bar-track{height:20px;background:var(--input-bg);border-radius:10px;overflow:hidden;margin:4px 0;position:relative}
+.run-view .week-card .bar-fill{height:100%;border-radius:10px;transition:width .3s;min-width:4px}
+.run-view .week-card .bar-fill.green{background:#4caf50}
+.run-view .week-card .bar-fill.amber{background:#ff9800}
+.run-view .week-card .bar-fill.red{background:#f44336}
+.run-view .week-card .bar-label{font-size:.8rem;color:var(--fg-muted)}
+.run-view .slot-coverage{display:flex;align-items:center;gap:4px;font-size:.75rem;padding:2px 6px;border-radius:3px}
+.run-view .slot-coverage.met{background:rgba(76,175,80,.2);color:#4caf50}
+.run-view .slot-coverage.below{background:rgba(244,67,54,.2);color:var(--danger);font-weight:600}
+.run-view .slot-coverage-table{width:100%;border-collapse:collapse;margin-top:6px;font-size:.75rem}
+.run-view .slot-coverage-table th,.run-view .slot-coverage-table td{border:1px solid var(--border);padding:3px 6px;text-align:center}
+.run-view .slot-coverage-table th{background:var(--surface)}
+.run-view .slot-coverage-table td.below{background:rgba(244,67,54,.15);color:var(--danger);font-weight:600}
+.run-view .slot-coverage-table td.met{background:rgba(76,175,80,.15)}
+.run-view .warning-banner{background:rgba(244,67,54,.15);border:1px solid var(--danger);border-radius:4px;padding:6px 10px;margin-top:6px;color:var(--danger);font-weight:600;font-size:.85rem}
+/* ===== AVAILABILITY ===== */
+.avail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}
+.avail-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:10px}
+.avail-card .name{font-weight:600;margin-bottom:4px}
+.avail-card .status{font-size:.8rem;padding:2px 6px;border-radius:3px;display:inline-block}
+.avail-card .status.away{background:var(--slot-away);color:#fff}
+.avail-card .status.run{background:var(--slot-run);color:#fff}
+.avail-card .status.project{background:var(--slot-project);color:#fff}
+.avail-card .status.available{background:var(--accent);color:#fff}
+/* ===== PEOPLE LIST ===== */
+.people-list{display:grid;gap:8px}
+.people-list .person-card{display:flex;align-items:center;gap:10px;padding:8px 12px;background:var(--surface);border:1px solid var(--border);border-radius:6px}
+.people-list .person-card .avatar{width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:1.1rem;flex-shrink:0}
+.people-list .person-card .info{flex:1}
+.people-list .person-card .info .name{font-weight:600}
+.people-list .person-card .info .meta{font-size:.8rem;color:var(--fg-muted)}
+.people-list .person-card .actions{display:flex;gap:4px}
+.hidden{display:none!important}
+/* ===== CELL EDITOR ===== */
+.cell-editor{position:fixed;z-index:150;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:16px;box-shadow:0 4px 24px rgba(0,0,0,.3);min-width:280px;max-width:400px}
+.cell-editor .tabs{display:flex;gap:4px;margin-bottom:10px}
+.cell-editor .tabs button{flex:1;padding:4px 8px;font-size:.8rem}
+.cell-editor .tabs button.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+.cell-editor .tab-content{min-height:100px}
+.cell-editor .tab-content.hidden{display:none}
+.cell-editor .project-row{display:flex;gap:4px;align-items:center;margin-bottom:4px}
+.cell-editor .project-row input[type=text]{flex:1}
+.cell-editor .project-row input[type=number]{width:60px}
+.cell-editor .project-row button{padding:2px 6px;font-size:.75rem}
+.cell-editor .pct-total{font-size:.8rem;color:var(--fg-muted);margin-top:4px}
+.cell-editor .pct-total.over{color:var(--danger);font-weight:600}
+.cell-editor .form-actions{margin-top:10px;display:flex;gap:6px;justify-content:flex-end}
+/* ===== SETTINGS ===== */
+.settings-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:500px}
+.settings-grid .field label{display:block;font-size:.8rem;color:var(--fg-muted);margin-bottom:2px}
+/* ===== HELP PANEL ===== */
+.help-shortcuts{display:grid;grid-template-columns:1fr 1fr;gap:4px 16px;font-size:.85rem}
+.help-shortcuts kbd{background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 5px;font-family:var(--font-mono);font-size:.75rem}
+/* ===== PRINT ===== */
+@media print{body{--bg:#fff;--fg:#000;--border:#ccc;--surface:#f5f5f5;--fg-muted:#666}#topbar,#statusbar,.cell-editor,.overlay,.nav-btn,.print-hide{display:none!important}#main{padding:0}.grid-table th.person-col,.grid-table td.person-col{position:static}.grid-table .half-day.not-filled::after{content:''}}
+/* ===== THEMES ===== */
+/* Light (default) */
+:root,[data-theme=light]{--bg:#f8f9fa;--fg:#212529;--fg-muted:#6c757d;--border:#dee2e6;--surface:#fff;--surface-hover:#e9ecef;--surface-active:#dee2e6;--input-bg:#fff;--accent:#4361ee;--danger:#e63946;--slot-empty:#f0f0f0;--slot-undetermined:#d4d4d4;--slot-undetermined-line:#b0b0b0;--slot-away:#e07b00;--slot-project:#4361ee;--slot-run:#e63946}
+/* Dracula */
+[data-theme=dracula]{--bg:#282a36;--fg:#f8f8f2;--fg-muted:#6272a4;--border:#44475a;--surface:#363849;--surface-hover:#44475a;--surface-active:#555770;--input-bg:#1e1f29;--accent:#bd93f9;--danger:#ff5555;--slot-empty:#3a3c4a;--slot-undetermined:#4a4c5a;--slot-undetermined-line:#6272a4;--slot-away:#ffb86c;--slot-project:#8be9fd;--slot-run:#ff5555}
+/* Monokai */
+[data-theme=monokai]{--bg:#272822;--fg:#f8f8f2;--fg-muted:#75715e;--border:#49483e;--surface:#3e3d32;--surface-hover:#49483e;--surface-active:#5a594e;--input-bg:#1d1e19;--accent:#a6e22e;--danger:#f92672;--slot-empty:#3a3b30;--slot-undetermined:#4a4b40;--slot-undetermined-line:#75715e;--slot-away:#fd971f;--slot-project:#66d9ef;--slot-run:#f92672}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="topbar">
+    <span class="logo">📊 Team Visualizer</span>
+    <button class="nav-btn active" data-view="team">Team Grid</button>
+    <button class="nav-btn" data-view="availability">Availability</button>
+    <button class="nav-btn" data-view="run">Run Coverage</button>
+    <button class="nav-btn" data-view="guests">Guests</button>
+    <button class="nav-btn" data-view="archived">Archived</button>
+    <button class="nav-btn" data-view="people">People</button>
+    <button class="nav-btn" data-view="settings">Settings</button>
+    <span class="spacer"></span>
+    <span class="topbar-right">
+      <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
+      <button id="btn-export" title="Export TOML (Ctrl+E)">⬇ Export</button>
+      <button id="btn-import" title="Import TOML">⬆ Import</button>
+      <button id="btn-help" title="Help">❓</button>
+    </span>
+  </div>
+  <div id="main"></div>
+  <div id="statusbar">
+    <span id="status-left"></span>
+    <span id="status-right"></span>
+  </div>
+</div>
+
+<!-- Overlay for modals -->
+<div id="overlay" class="overlay hidden"><div id="modal-content" class="modal"></div></div>
+
+<!-- Cell editor -->
+<div id="cell-editor" class="cell-editor hidden"></div>
+
+<script>
+/* ===================================================================
+   TEAM ACTIVITY VISUALIZER — V1
+   Single-file self-contained HTML5 application
+   =================================================================== */
+
+// ===== UTILITY FUNCTIONS =====
+const $ = s => document.querySelector(s);
+const $$ = s => document.querySelectorAll(s);
+const uid = () => Math.random().toString(36).substr(2,9) + Date.now().toString(36);
+const pad2 = n => String(n).padStart(2,'0');
+const fmtDate = d => `${d.getFullYear()}/${pad2(d.getMonth()+1)}/${pad2(d.getDate())}`;
+const parseDate = s => { const m = s.match(/^(\d{4})\/(\d{2})\/(\d{2})$/); return m ? new Date(+m[1],+m[2]-1,+m[3]) : null; };
+const fmtDateTime = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:00`;
+const fmtExportTS = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}-${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
+const daysSince = (d1,d2) => Math.round((d2-d1)/(86400000));
+const clone = o => JSON.parse(JSON.stringify(o));
+const sum = arr => arr.reduce((a,b)=>a+b,0);
+const escapeHtml = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+// Project color hashing — same project name = same color across people
+function projectColor(name) {
+  if (!name) return null;
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = ((h<<5)-h+name.charCodeAt(i))|0;
+  const hue = Math.abs(h) % 360;
+  const sat = 55 + (Math.abs(h>>8) % 20); // 55-75%
+  const light = 45 + (Math.abs(h>>16) % 10); // 45-55%
+  return `hsl(${hue},${sat}%,${light}%)`;
+}
+function projectColorBg(slotData) {
+  if (!slotData || !slotData.projects || slotData.projects.length === 0) return null;
+  if (slotData.projects.length === 1 && !slotData.run) return projectColor(slotData.projects[0].name);
+  if (slotData.projects.length === 1 && slotData.run) return projectColor(slotData.projects[0].name);
+  // Multi-project: gradient of first two
+  if (slotData.projects.length >= 2) {
+    const c1 = projectColor(slotData.projects[0].name);
+    const c2 = projectColor(slotData.projects[1].name);
+    return `linear-gradient(135deg,${c1} 50%,${c2} 50%)`;
+  }
+  return null;
+}
+
+// Week helpers: Monday-start weeks
+function getWeekStart(date) {
+  const d = new Date(date);
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day; // Monday = 1
+  d.setDate(d.getDate() + diff);
+  d.setHours(0,0,0,0);
+  return d;
+}
+function addWeeks(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n * 7);
+  return d;
+}
+function formatWeekStart(d) {
+  return fmtDate(d);
+}
+function getWeekDays(weekStart) {
+  const days = [];
+  for (let i = 0; i < 7; i++) {
+    const d = new Date(weekStart);
+    d.setDate(d.getDate() + i);
+    days.push(d);
+  }
+  return days;
+}
+function getWeekNumber(d) {
+  const start = getWeekStart(d);
+  const yearStart = new Date(start.getFullYear(), 0, 1);
+  return Math.ceil(((start - yearStart) / 86400000 + yearStart.getDay() + 1) / 7);
+}
+
+// ===== STORE =====
+const STORE_KEY = 'teamviz_data';
+let store = null;
+let undoStack = null; // single-level undo
+
+const defaultSettings = {
+  window_weeks: 4,
+  prune_weeks: 12,
+  week_starts: 'monday',
+  run_mode: 'ratio',
+  run_target_persons: 3,
+  theme: 'dracula',
+  export_counter: 1
+};
+
+function initStore() {
+  const raw = localStorage.getItem(STORE_KEY);
+  if (raw) {
+    try {
+      store = JSON.parse(raw);
+      migrateStore();
+      return true;
+    } catch(e) { console.error('Store parse error', e); }
+  }
+  store = {
+    schema_version: 1,
+    settings: clone(defaultSettings),
+    people: [],
+    planning: {},
+    rotation: {}
+  };
+  saveStore();
+  return false;
+}
+
+function migrateStore() {
+  if (!store.schema_version || store.schema_version < 1) {
+    // Future migrations go here
+    store.schema_version = 1;
+  }
+  // Ensure all fields exist
+  if (!store.settings) store.settings = clone(defaultSettings);
+  Object.keys(defaultSettings).forEach(k => {
+    if (store.settings[k] === undefined) store.settings[k] = defaultSettings[k];
+  });
+  // Migrate old run ratio target to new person-count target
+  if (store.settings.default_run_ratio_target !== undefined && store.settings.run_target_persons === undefined) {
+    // Convert old percentage to approximate person count (20% of 20 people ≈ 4, but we default to 3)
+    store.settings.run_target_persons = 3;
+  }
+  delete store.settings.default_run_ratio_target;
+  if (!store.people) store.people = [];
+  if (!store.planning) store.planning = {};
+  if (!store.rotation) store.rotation = {};
+  saveStore();
+}
+
+function saveStore() {
+  localStorage.setItem(STORE_KEY, JSON.stringify(store));
+  updateStatusBar();
+}
+
+function pushUndo() {
+  undoStack = clone(store);
+  document.getElementById('btn-undo').disabled = false;
+}
+
+function undo() {
+  if (!undoStack) return;
+  store = undoStack;
+  undoStack = null;
+  document.getElementById('btn-undo').disabled = true;
+  saveStore();
+  render();
+}
+
+// ===== PEOPLE CRUD =====
+function getActivePeople() { return store.people.filter(p => p.status === 'active' && !p.guest); }
+function getActiveGuests() { return store.people.filter(p => p.status === 'active' && p.guest); }
+function getArchivedPeople() { return store.people.filter(p => p.status === 'archived'); }
+function getPerson(id) { return store.people.find(p => p.id === id); }
+
+function addPerson(data) {
+  pushUndo();
+  const p = {
+    id: uid(),
+    name: data.name || 'New Person',
+    role: data.role || '',
+    sub_team: data.sub_team || '',
+    avatar: { emoji: data.emoji || '👤', color: data.color || randomColor() },
+    start_date: data.start_date || fmtDate(new Date()),
+    default_projects: data.default_projects || [],
+    status: 'active',
+    archived_date: '',
+    guest: !!data.guest
+  };
+  store.people.push(p);
+  saveStore();
+  return p;
+}
+
+function updatePerson(id, data) {
+  pushUndo();
+  const p = getPerson(id);
+  if (!p) return;
+  Object.assign(p, data);
+  saveStore();
+}
+
+function archivePerson(id) {
+  pushUndo();
+  const p = getPerson(id);
+  if (!p) return;
+  p.status = 'archived';
+  p.archived_date = fmtDate(new Date());
+  saveStore();
+}
+
+function unarchivePerson(id) {
+  pushUndo();
+  const p = getPerson(id);
+  if (!p) return;
+  p.status = 'active';
+  p.archived_date = '';
+  saveStore();
+}
+
+function removePerson(id) {
+  pushUndo();
+  store.people = store.people.filter(p => p.id !== id);
+  // Remove planning data
+  Object.keys(store.planning).forEach(k => {
+    if (k.startsWith(id + '|')) delete store.planning[k];
+  });
+  Object.keys(store.rotation).forEach(k => {
+    if (k.startsWith(id + '|')) delete store.rotation[k];
+  });
+  saveStore();
+}
+
+function randomColor() {
+  const colors = ['#4361ee','#e07b00','#e63946','#2ec4b6','#ff9f1c','#7209b7','#3a86ff','#8338ec','#fb5607','#06d6a0','#118ab2','#ef476f'];
+  return colors[Math.floor(Math.random() * colors.length)];
+}
+
+// ===== PLANNING CRUD =====
+function getSlotKey(personId, date, slot) { return `${personId}|${date}|${slot}`; }
+
+function getSlot(personId, date, slot) {
+  const key = getSlotKey(personId, date, slot);
+  return store.planning[key] || null;
+}
+
+function setSlot(personId, date, slot, data) {
+  pushUndo();
+  const key = getSlotKey(personId, date, slot);
+  if (data === null || data.state === 'not_filled') {
+    delete store.planning[key];
+  } else {
+    store.planning[key] = data;
+  }
+  saveStore();
+}
+
+function getPersonPlanning(personId, startDate, endDate) {
+  const result = {};
+  const start = parseDate(startDate);
+  const end = parseDate(endDate);
+  if (!start || !end) return result;
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const ds = fmtDate(d);
+    ['am','pm'].forEach(slot => {
+      const key = getSlotKey(personId, ds, slot);
+      if (store.planning[key]) {
+        result[key] = store.planning[key];
+      }
+    });
+  }
+  return result;
+}
+
+function getDefaultSlot() {
+  return { state: 'not_filled', away: null, projects: [], run: false };
+}
+
+// ===== RUN ROTATION =====
+function setRotation(personId, weekStart, isRunPerson) {
+  pushUndo();
+  const key = `${personId}|${weekStart}`;
+  if (isRunPerson) {
+    store.rotation[key] = true;
+  } else {
+    delete store.rotation[key];
+  }
+  saveStore();
+}
+
+function isRunPerson(personId, weekStart) {
+  return !!store.rotation[`${personId}|${weekStart}`];
+}
+
+function getRunPeople(weekStart) {
+  return store.people.filter(p => p.status === 'active' && !p.guest && isRunPerson(p.id, weekStart));
+}
+
+// ===== RUN COVERAGE CALCULATIONS (headcount model) =====
+// Count people on run per half-day slot, compare to run_target_persons
+function calcRunRatio(personId, weekStart) {
+  const p = getPerson(personId);
+  if (!p) return { working: 0, run: 0, ratio: 0, target: 0 };
+  const days = getWeekDays(parseDate(weekStart));
+  let working = 0, run = 0;
+  days.forEach(d => {
+    const ds = fmtDate(d);
+    ['am','pm'].forEach(slot => {
+      const key = getSlotKey(personId, ds, slot);
+      const slotData = store.planning[key];
+      if (!slotData || slotData.state === 'not_filled') {
+        working++;
+      } else if (slotData.state === 'undetermined') {
+        working++;
+      } else if (slotData.away) {
+        // away = not working
+      } else {
+        working++;
+        if (slotData.run) run++;
+      }
+    });
+  });
+  return { working, run, ratio: working > 0 ? (run / working) * 100 : 0 };
+}
+
+// Per-half-day run headcount for a week
+function calcRunCoveragePerSlot(weekStart) {
+  const people = getActivePeople();
+  const days = getWeekDays(parseDate(weekStart));
+  const result = []; // [{day, dayName, am: {onRun, away, avail}, pm: {...}}]
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  days.forEach((d, di) => {
+    if (di >= 5) return;
+    const ds = fmtDate(d);
+    const dayResult = { dayName: dayNames[di], date: ds, am: { onRun: 0, away: 0, avail: 0 }, pm: { onRun: 0, away: 0, avail: 0 } };
+    ['am','pm'].forEach(slot => {
+      people.forEach(p => {
+        const key = getSlotKey(p.id, ds, slot);
+        const sd = store.planning[key];
+        if (!sd || sd.state === 'not_filled' || sd.state === 'undetermined') dayResult[slot].avail++;
+        else if (sd.away) dayResult[slot].away++;
+        else { dayResult[slot].avail++; if (sd.run) dayResult[slot].onRun++; }
+      });
+    });
+    result.push(dayResult);
+  });
+  return result;
+}
+
+function calcTeamRunRatio(weekStart) {
+  const people = getActivePeople();
+  let totalWorking = 0, totalRun = 0;
+  people.forEach(p => {
+    const r = calcRunRatio(p.id, weekStart);
+    totalWorking += r.working;
+    totalRun += r.run;
+  });
+  const halfDaysPerWeek = 10;
+  return {
+    totalWorking, totalRun,
+    ratio: totalWorking > 0 ? (totalRun / totalWorking) * 100 : 0,
+    avgCollaborators: halfDaysPerWeek > 0 ? totalRun / halfDaysPerWeek : 0,
+    personCount: people.length
+  };
+}
+
+// ===== TOML PARSER (minimal) =====
+// Handles the subset needed for our schema
+function parseTOML(text) {
+  const result = {};
+  let currentTable = result;
+  let currentArrayTable = null;
+  let arrayTableName = null;
+  
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    let line = lines[i].trim();
+    // Remove comments
+    const commentIdx = line.indexOf('#');
+    if (commentIdx >= 0) line = line.substring(0, commentIdx).trim();
+    if (!line) continue;
+    
+    // Array of tables [[...]]
+    const arrMatch = line.match(/^\[\[(.+)\]\]$/);
+    if (arrMatch) {
+      arrayTableName = arrMatch[1].trim();
+      if (!result[arrayTableName]) result[arrayTableName] = [];
+      const newObj = {};
+      result[arrayTableName].push(newObj);
+      currentArrayTable = newObj;
+      currentTable = newObj;
+      continue;
+    }
+    
+    // Table [...]
+    const tableMatch = line.match(/^\[(.+)\]$/);
+    if (tableMatch) {
+      arrayTableName = null;
+      const name = tableMatch[1].trim();
+      let parts = name.split('.').map(s => s.trim());
+      let obj = result;
+      parts.forEach(p => {
+        if (!obj[p]) obj[p] = {};
+        obj = obj[p];
+      });
+      currentTable = obj;
+      continue;
+    }
+    
+    // Key = Value
+    const kvMatch = line.match(/^([^=]+)=\s*(.+)$/);
+    if (kvMatch) {
+      const key = kvMatch[1].trim();
+      let val = kvMatch[2].trim();
+      const target = currentArrayTable || currentTable;
+      target[key] = parseTOMLValue(val);
+    }
+  }
+  return result;
+}
+
+function parseTOMLValue(val) {
+  val = val.trim();
+  // String (quoted)
+  if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    return val.slice(1, -1);
+  }
+  // Boolean
+  if (val === 'true') return true;
+  if (val === 'false') return false;
+  // Number
+  if (/^-?\d+(\.\d+)?$/.test(val)) {
+    return val.includes('.') ? parseFloat(val) : parseInt(val, 10);
+  }
+  // Inline table { ... } — parse with brace-awareness
+  if (val.startsWith('{') && val.endsWith('}')) {
+    return parseInlineTable(val);
+  }
+  // Array [ ... ] — parse with bracket-awareness
+  if (val.startsWith('[') && val.endsWith(']')) {
+    return parseArrayValue(val);
+  }
+  // Date/Time
+  if (/^\d{4}-\d{2}-\d{2}/.test(val)) {
+    return val; // keep as string
+  }
+  return val;
+}
+
+// Parse inline table respecting nested braces
+function parseInlineTable(val) {
+  const inner = val.slice(1, -1).trim();
+  if (!inner) return {};
+  const obj = {};
+  const pairs = splitTopLevel(inner, ',');
+  pairs.forEach(pair => {
+    const eqIdx = pair.indexOf('=');
+    if (eqIdx < 0) return;
+    const k = pair.substring(0, eqIdx).trim();
+    const v = pair.substring(eqIdx + 1).trim();
+    if (k && v) obj[k] = parseTOMLValue(v);
+  });
+  return obj;
+}
+
+// Parse array respecting nested brackets/braces
+function parseArrayValue(val) {
+  const inner = val.slice(1, -1).trim();
+  if (!inner) return [];
+  const items = splitTopLevel(inner, ',');
+  return items.map(s => parseTOMLValue(s.trim())).filter(v => v !== '');
+}
+
+// Split on delimiter at top level (not inside brackets/braces/quotes)
+function splitTopLevel(str, delim) {
+  const parts = [];
+  let depth = 0, inStr = false, strCh = '';
+  let start = 0;
+  for (let i = 0; i < str.length; i++) {
+    const c = str[i];
+    if (inStr) {
+      if (c === strCh && str[i-1] !== '\\') inStr = false;
+      continue;
+    }
+    if (c === '"' || c === "'") { inStr = true; strCh = c; continue; }
+    if (c === '{' || c === '[') depth++;
+    else if (c === '}' || c === ']') depth--;
+    else if (c === delim && depth === 0) {
+      parts.push(str.substring(start, i).trim());
+      start = i + 1;
+    }
+  }
+  if (start < str.length) parts.push(str.substring(start).trim());
+  return parts.filter(p => p);
+}
+
+// ===== TOML SERIALIZER =====
+function serializeTOML(obj, indent) {
+  indent = indent || '';
+  let out = '';
+  
+  if (Array.isArray(obj)) {
+    obj.forEach(item => {
+      if (typeof item === 'object' && item !== null) {
+        out += serializeTOMLObject(item, indent);
+      } else {
+        out += indent + serializeTOMLValue(item) + '\n';
+      }
+    });
+  } else if (typeof obj === 'object' && obj !== null) {
+    out += serializeTOMLObject(obj, indent);
+  }
+  return out;
+}
+
+function serializeTOMLObject(obj, indent) {
+  let out = '';
+  const keys = Object.keys(obj);
+  
+  // Simple key-value pairs first
+  keys.forEach(k => {
+    const v = obj[k];
+    if (v === null || v === undefined) return;
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') {
+      // Array of tables - handled later
+      return;
+    }
+    if (typeof v === 'object') {
+      // Inline table or nested - handled later
+      return;
+    }
+    out += indent + k + ' = ' + serializeTOMLValue(v) + '\n';
+  });
+  
+  // Inline objects
+  keys.forEach(k => {
+    const v = obj[k];
+    if (v === null || v === undefined) return;
+    if (typeof v === 'object' && !Array.isArray(v)) {
+      out += indent + k + ' = ' + serializeInlineTable(v) + '\n';
+    }
+  });
+  
+  // Arrays of tables
+  keys.forEach(k => {
+    const v = obj[k];
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') {
+      v.forEach(item => {
+        out += '\n' + indent + '[[' + k + ']]\n';
+        out += serializeTOMLObject(item, indent);
+      });
+    }
+  });
+  
+  return out;
+}
+
+function serializeTOMLValue(v) {
+  if (typeof v === 'string') return '"' + v.replace(/"/g, '\\"') + '"';
+  if (typeof v === 'boolean') return v ? 'true' : 'false';
+  if (typeof v === 'number') return String(v);
+  if (Array.isArray(v)) return '[' + v.map(serializeTOMLValue).join(', ') + ']';
+  if (typeof v === 'object') return serializeInlineTable(v);
+  return String(v);
+}
+
+function serializeInlineTable(obj) {
+  const entries = Object.keys(obj).map(k => k + ' = ' + serializeTOMLValue(obj[k]));
+  return '{ ' + entries.join(', ') + ' }';
+}
+
+// ===== ICS GENERATOR =====
+function generateICS(personId, startDate, endDate) {
+  const p = getPerson(personId);
+  if (!p) return '';
+  const start = parseDate(startDate);
+  const end = parseDate(endDate);
+  if (!start || !end) return '';
+  
+  let events = [];
+  for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+    const ds = fmtDate(d);
+    ['am','pm'].forEach((slot, si) => {
+      const key = getSlotKey(personId, ds, slot);
+      const slotData = store.planning[key];
+      if (!slotData || slotData.state === 'not_filled') return;
+      
+      const hourStart = si === 0 ? 9 : 14;
+      const dtStart = new Date(d);
+      dtStart.setHours(hourStart, 0, 0, 0);
+      const dtEnd = new Date(d);
+      dtEnd.setHours(hourStart + 4, 0, 0, 0);
+      
+      if (slotData.state === 'undetermined') {
+        events.push(makeEvent(dtStart, dtEnd, 'Project: undetermined', 'Undetermined project', 'undetermined'));
+        return;
+      }
+      
+      if (slotData.away) {
+        const label = slotData.away.note ? `${slotData.away.type}: ${slotData.away.note}` : `Away: ${slotData.away.type}`;
+        events.push(makeEvent(dtStart, dtEnd, label, `Away - ${slotData.away.type}`, slotData.away.type));
+        return;
+      }
+      
+      if (slotData.projects && slotData.projects.length > 0) {
+        slotData.projects.forEach(proj => {
+          const desc = `Project: ${proj.name} (${proj.pct}%)` + (slotData.run ? ' + Run duty' : '');
+          const title = `Project: ${proj.name}`;
+          events.push(makeEvent(dtStart, dtEnd, title, desc, 'project'));
+        });
+      } else if (slotData.run) {
+        events.push(makeEvent(dtStart, dtEnd, 'Run duty', 'Run duty', 'run'));
+      }
+    });
+  }
+  
+  let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamVisualizer//V1//EN\r\n';
+  events.forEach(e => { ics += e; });
+  ics += 'END:VCALENDAR\r\n';
+  return ics;
+}
+
+function makeEvent(dtStart, dtEnd, summary, description, category) {
+  const uidVal = uid() + '@teamviz';
+  const fmt = d => {
+    const y = d.getFullYear();
+    const m = pad2(d.getMonth()+1);
+    const dd = pad2(d.getDate());
+    const h = pad2(d.getHours());
+    const min = pad2(d.getMinutes());
+    return `${y}${m}${dd}T${h}${min}00`;
+  };
+  const now = new Date();
+  const dtstamp = fmt(now) + 'Z';
+  const esc = s => String(s||'').replace(/\\/g,'\\\\').replace(/,/g,'\\,').replace(/;/g,'\\;').replace(/\n/g,'\\n');
+  return [
+    'BEGIN:VEVENT',
+    'UID:' + uidVal,
+    'DTSTAMP:' + dtstamp,
+    'DTSTART:' + fmt(dtStart),
+    'DTEND:' + fmt(dtEnd),
+    'SUMMARY:' + esc(summary),
+    'DESCRIPTION:' + esc(description),
+    'CATEGORIES:' + esc(category),
+    'END:VEVENT\r\n'
+  ].join('\r\n');
+}
+
+// ===== SAMPLE DATA =====
+function loadSampleData() {
+  pushUndo();
+  const now = new Date();
+  const weekStart = getWeekStart(now);
+  
+  const samplePeople = [
+    { name: 'Alice Martin', role: 'Backend Dev', sub_team: 'Platform', emoji: '🦊', color: '#e07b00', default_projects: ['Atlas', 'Beacon'] },
+    { name: 'Bob Chen', role: 'Frontend Dev', sub_team: 'Web', emoji: '🐉', color: '#4361ee', default_projects: ['Beacon', 'Compass'] },
+    { name: 'Clara Dupont', role: 'QA Engineer', sub_team: 'Quality', emoji: '🦋', color: '#2ec4b6', default_projects: ['Atlas'] },
+    { name: 'David Kim', role: 'DevOps', sub_team: 'Platform', emoji: '🐻', color: '#7209b7', default_projects: ['Infra', 'Atlas'] },
+    { name: 'Elena Rossi', role: 'Product Owner', sub_team: 'Management', emoji: '🦉', color: '#ff9f1c', default_projects: ['Beacon', 'Compass'] },
+    { name: 'Felix Weber', role: 'Backend Dev', sub_team: 'Platform', emoji: '🐱', color: '#3a86ff', default_projects: ['Atlas'] },
+    { name: 'Guest: Sophie Martin', role: 'Designer', sub_team: '', emoji: '🎨', color: '#06d6a0', default_projects: ['Beacon'], guest: true },
+    { name: 'Guest: Thomas Lee', role: 'Contractor', sub_team: '', emoji: '🔧', color: '#ef476f', default_projects: ['Compass'], guest: true }
+  ];
+  
+  const people = [];
+  samplePeople.forEach(sp => {
+    const p = addPerson(sp);
+    people.push(p);
+  });
+  
+  // Fill 4 weeks of sample planning
+  for (let w = 0; w < 4; w++) {
+    const ws = addWeeks(weekStart, w);
+    const wsStr = formatWeekStart(ws);
+    const days = getWeekDays(ws);
+    
+    days.forEach((d, di) => {
+      const ds = fmtDate(d);
+      const isWeekend = di >= 5;
+      
+      people.forEach((p, pi) => {
+        if (p.guest) return; // skip guests for now
+        
+        if (isWeekend) return; // skip weekends
+        
+        // Alice: vacation week 2 (Mon-Wed)
+        if (p.name === 'Alice Martin' && w === 1 && di < 3) {
+          setSlot(p.id, ds, 'am', { state: 'filled', away: { type: 'vacation', note: '' }, projects: [], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: { type: 'vacation', note: '' }, projects: [], run: false });
+          return;
+        }
+        
+        // Bob: training Thu-Fri week 1
+        if (p.name === 'Bob Chen' && w === 0 && di >= 3) {
+          setSlot(p.id, ds, 'am', { state: 'filled', away: { type: 'training', note: 'React workshop' }, projects: [], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: { type: 'training', note: 'React workshop' }, projects: [], run: false });
+          return;
+        }
+        
+        // Clara: sick leave Wed week 3
+        if (p.name === 'Clara Dupont' && w === 2 && di === 2) {
+          setSlot(p.id, ds, 'am', { state: 'filled', away: { type: 'sick_leave', note: '' }, projects: [], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: { type: 'sick_leave', note: '' }, projects: [], run: false });
+          return;
+        }
+        
+        // David: conference week 0 Thu-Fri
+        if (p.name === 'David Kim' && w === 0 && di >= 3) {
+          setSlot(p.id, ds, 'am', { state: 'filled', away: { type: 'conference', note: 'KubeCon' }, projects: [], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: { type: 'conference', note: 'KubeCon' }, projects: [], run: false });
+          return;
+        }
+        
+        // Regular project + run assignments
+        const isRunDay = di === 1 || di === 3; // Run on Tuesday and Thursday
+        const proj1 = p.default_projects[0] || 'Undetermined';
+        const proj2 = p.default_projects[1];
+        
+        if (isRunDay) {
+          // AM: project, PM: project + run
+          setSlot(p.id, ds, 'am', { state: 'filled', away: null, projects: [{ name: proj1, pct: 100 }], run: false });
+          if (proj2) {
+            setSlot(p.id, ds, 'pm', { state: 'filled', away: null, projects: [{ name: proj1, pct: 60 }, { name: proj2, pct: 40 }], run: true });
+          } else {
+            setSlot(p.id, ds, 'pm', { state: 'filled', away: null, projects: [{ name: proj1, pct: 100 }], run: true });
+          }
+        } else {
+          // Full day on project
+          setSlot(p.id, ds, 'am', { state: 'filled', away: null, projects: [{ name: proj1, pct: 100 }], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: null, projects: [{ name: proj1, pct: 100 }], run: false });
+        }
+        
+        // Some undetermined slots
+        if (p.name === 'Felix Weber' && w === 3 && di === 4) {
+          setSlot(p.id, ds, 'am', { state: 'undetermined', away: null, projects: [], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'undetermined', away: null, projects: [], run: false });
+        }
+      });
+    });
+  }
+  
+  // Add some guest planning
+  const sophie = people.find(p => p.name === 'Guest: Sophie Martin');
+  const thomas = people.find(p => p.name === 'Guest: Thomas Lee');
+  if (sophie && thomas) {
+    for (let w = 0; w < 4; w++) {
+      const ws = addWeeks(weekStart, w);
+      const days = getWeekDays(ws);
+      days.forEach((d, di) => {
+        if (di >= 5) return;
+        const ds = fmtDate(d);
+        [sophie, thomas].forEach((p, pi) => {
+          const proj = p.default_projects[0] || 'Undetermined';
+          setSlot(p.id, ds, 'am', { state: 'filled', away: null, projects: [{ name: proj, pct: 100 }], run: false });
+          setSlot(p.id, ds, 'pm', { state: 'filled', away: null, projects: [{ name: proj, pct: 100 }], run: false });
+        });
+      });
+    }
+  }
+  
+  saveStore();
+  render();
+}
+
+// ===== VIEW STATE =====
+let currentView = 'team';
+let currentPersonId = null;
+let scrollOffset = 0; // weeks offset from current week
+let availabilityWeekOffset = 0; // weeks offset for availability view
+
+// ===== DRAG SELECTION STATE =====
+let dragState = null; // {startCell, cells: Set, personId, isDragging}
+
+// Restore scroll offset from store (must be after initStore)
+// NOTE: scroll offset is restored after initStore() runs (see INIT section)
+
+function getVisibleWeeks() {
+  const n = store.settings.window_weeks || 4;
+  const now = new Date();
+  const currentWeekStart = getWeekStart(now);
+  const weeks = [];
+  for (let i = 0; i < n; i++) {
+    weeks.push(addWeeks(currentWeekStart, i + scrollOffset));
+  }
+  return weeks;
+}
+
+// ===== RENDER ENGINE =====
+function render() {
+  const main = document.getElementById('main');
+  const view = currentView;
+  
+  // Update nav buttons
+  $$('.nav-btn[data-view]').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.view === view);
+  });
+  
+  // Apply theme
+  document.documentElement.setAttribute('data-theme', store.settings.theme || 'dracula');
+  
+  switch(view) {
+    case 'team': renderTeamGrid(main); break;
+    case 'availability': renderAvailability(main); break;
+    case 'run': renderRunCoverage(main); break;
+    case 'guests': renderGuests(main); break;
+    case 'archived': renderArchived(main); break;
+    case 'people': renderPeople(main); break;
+    case 'settings': renderSettings(main); break;
+    case 'individual': renderIndividual(main); break;
+    default: renderTeamGrid(main);
+  }
+  
+  updateStatusBar();
+}
+
+function updateStatusBar() {
+  const left = document.getElementById('status-left');
+  const right = document.getElementById('status-right');
+  const active = getActivePeople().length;
+  const guests = getActiveGuests().length;
+  const archived = getArchivedPeople().length;
+  left.textContent = `${active} team members · ${guests} guests · ${archived} archived`;
+  const now = new Date();
+  right.textContent = `Week ${getWeekNumber(now)} · ${fmtDate(now)}`;
+}
+
+// ===== TEAM GRID VIEW =====
+function renderTeamGrid(container) {
+  const people = getActivePeople();
+  if (people.length === 0) {
+    container.innerHTML = '<div id="onboarding"><h1>👋 Welcome to Team Visualizer</h1><p>Start by adding team members, then fill in their planning.</p><div class="actions"><button onclick="showAddPersonModal()">➕ Add Person</button><button onclick="loadSampleData()">📦 Load Sample Data</button><button onclick="showImportModal()">⬆ Import TOML</button></div></div>';
+    return;
+  }
+  
+  const weeks = getVisibleWeeks();
+  const n = weeks.length;
+  
+  let html = '<div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Person</th>';
+  
+  weeks.forEach((w, wi) => {
+    const ws = formatWeekStart(w);
+    const weekNum = getWeekNumber(w);
+    const sep = wi > 0 ? ' week-start' : '';
+    html += `<th colspan="2" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
+  });
+  html += '</tr><tr><th class="person-col"></th>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri'];
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
+      html += `<th class="day-header${sep}">${dayNames[di]}</th>`;
+    });
+  });
+  html += '</tr></thead><tbody>';
+  
+  // Person rows — using merge groups with colspan
+  people.forEach(p => {
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${p.role || ''} · ${p.sub_team || ''}">${p.avatar.emoji} ${p.name}</td>`;
+    const groups = buildSlotGroups(p.id, weeks);
+    groups.forEach(g => {
+      const colspan = g.cells.length;
+      const first = g.cells[0];
+      const last = g.cells[g.cells.length - 1];
+      const cls = getSlotClass(first.slotData);
+      const label = getCellLabel(first.slotData);
+      const sep = (first.dayIdx === 0 && first.weekIdx > 0) ? ' week-start' : '';
+      const cellsJson = JSON.stringify(g.cells.map(c => ({date: c.date, slot: c.slot})));
+      const title = getSlotTitle(p, first.date, first.slot, first.slotData) + (colspan > 1 ? ` → ${last.date} ${last.slot.toUpperCase()}` : '');
+      // Project color via inline style
+      let bgStyle = '';
+      if (cls.includes('project')) {
+        const bg = projectColorBg(first.slotData);
+        if (bg) bgStyle = ` style="background:${bg}"`;
+      }
+      html += `<td class="half-day ${cls}${sep}" colspan="${colspan}" data-person="${p.id}" data-cells='${cellsJson}' onmousedown="startDrag(event,'${p.id}',this.dataset.cells)" title="${title}"${bgStyle}><span class="cell-label">${escapeHtml(label)}</span></td>`;
+    });
+    html += '</tr>';
+  });
+  
+  // Summary row — includes run coverage vs target
+  const runTarget = store.settings.run_target_persons || 3;
+  html += '<tr class="summary-row"><td class="person-col"><strong>Summary</strong></td>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const ds = fmtDate(d);
+      let awayCount = 0, runCount = 0, total = 0;
+      people.forEach(p => {
+        ['am','pm'].forEach(slot => {
+          const key = getSlotKey(p.id, ds, slot);
+          const sd = store.planning[key];
+          if (sd && sd.away) awayCount++;
+          if (sd && sd.run) runCount++;
+          total++;
+        });
+      });
+      const availPct = total > 0 ? Math.round(((total - awayCount) / total) * 100) : 0;
+      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
+      const runWarn = runCount < runTarget ? ' style="color:var(--danger);font-weight:600"' : '';
+      html += `<td colspan="2" class="${sep}" style="font-size:.65rem;padding:2px 4px">${availPct}%<br><span ${runWarn}>${runCount}/${runTarget}r</span></td>`;
+    });
+  });
+  html += '</tr></tbody></table></div>';
+  
+  // Navigation controls
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <button onclick="scrollOffset--;store.settings._scrollOffset=scrollOffset;saveStore();render()">◀ Earlier</button>
+    <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
+    <button onclick="scrollOffset++;store.settings._scrollOffset=scrollOffset;saveStore();render()">Later ▶</button>
+    <button onclick="scrollOffset=0;store.settings._scrollOffset=scrollOffset;saveStore();render()" style="margin-left:8px">Today</button>
+  </div>`;
+  
+  // Legend
+  html += `<div style="display:flex;gap:12px;margin-top:8px;font-size:.75rem;flex-wrap:wrap">
+    <span><span class="half-day away" style="display:inline-block;width:12px;height:12px"></span> Away</span>
+    <span><span class="half-day project" style="display:inline-block;width:12px;height:12px"></span> Project</span>
+    <span><span class="half-day run" style="display:inline-block;width:12px;height:12px"></span> Run</span>
+    <span><span class="half-day undetermined" style="display:inline-block;width:12px;height:12px"></span> Undetermined</span>
+    <span><span class="half-day not-filled" style="display:inline-block;width:12px;height:12px"></span> Not filled</span>
+  </div>`;
+  
+  container.innerHTML = html;
+}
+
+function getSlotClass(slotData) {
+  if (!slotData || slotData.state === 'not_filled') return 'not-filled';
+  if (slotData.state === 'undetermined') return 'undetermined';
+  if (slotData.away) return 'away';
+  if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run';
+  if (slotData.run) return 'run';
+  if (slotData.projects && slotData.projects.length > 0) return 'project';
+  return 'not-filled';
+}
+
+// ===== MERGE / LABEL HELPERS =====
+function getMergeKey(slotData, weekIndex) {
+  // Break merge groups at week boundaries
+  const wk = 'w' + weekIndex + ':';
+  if (!slotData || slotData.state === 'not_filled') return wk + 'nf';
+  if (slotData.state === 'undetermined') return wk + 'und';
+  if (slotData.away) return wk + 'away:' + slotData.away.type;
+  // Only merge single-project slots (multi-project too complex to merge)
+  if (slotData.projects && slotData.projects.length === 1 && !slotData.run) return wk + 'proj:' + slotData.projects[0].name;
+  if (slotData.projects && slotData.projects.length === 1 && slotData.run) return wk + 'projrun:' + slotData.projects[0].name;
+  if (slotData.run && (!slotData.projects || slotData.projects.length === 0)) return wk + 'run';
+  // Multi-project or complex: unique key per slot (no merge)
+  return wk + 'complex:' + JSON.stringify(slotData.projects) + ':' + (slotData.run ? '1' : '0');
+}
+
+function getCellLabel(slotData) {
+  if (!slotData || slotData.state === 'not_filled') return '?';
+  if (slotData.state === 'undetermined') return '?';
+  if (slotData.away) {
+    const abbr = {
+      vacation: 'Vac', public_holiday: 'Hol', sick_leave: 'Sick', training: 'Train',
+      conference: 'Conf', parental_leave: 'Par', sabbatical: 'Sab', other: 'Other'
+    };
+    return abbr[slotData.away.type] || slotData.away.type;
+  }
+  let parts = [];
+  if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
+  if (slotData.run) parts.push('R');
+  return parts.join('+');
+}
+
+// Build merge groups for a person across visible weeks
+function buildSlotGroups(personId, weeks) {
+  const allSlots = [];
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const ds = fmtDate(d);
+      ['am', 'pm'].forEach(slot => {
+        const key = getSlotKey(personId, ds, slot);
+        const slotData = store.planning[key];
+        allSlots.push({ date: ds, slot, slotData, weekIdx: wi, dayIdx: di });
+      });
+    });
+  });
+  // Group consecutive slots with same merge key
+  const groups = [];
+  let cur = null;
+  allSlots.forEach(s => {
+    const mk = getMergeKey(s.slotData, s.weekIdx);
+    if (!cur || cur.mergeKey !== mk) {
+      cur = { mergeKey: mk, cells: [s] };
+      groups.push(cur);
+    } else {
+      cur.cells.push(s);
+    }
+  });
+  return groups;
+}
+
+function getSlotTitle(person, dateStr, slot, slotData) {
+  const p = getPerson(person);
+  const name = p ? p.name : person;
+  if (!slotData || slotData.state === 'not_filled') return `${name} · ${dateStr} ${slot} · Not filled`;
+  if (slotData.state === 'undetermined') return `${name} · ${dateStr} ${slot} · Undetermined project`;
+  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}`;
+  let parts = [];
+  if (slotData.projects) slotData.projects.forEach(p => parts.push(`${p.name} ${p.pct}%`));
+  if (slotData.run) parts.push('Run');
+  return `${name} · ${dateStr} ${slot} · ${parts.join(' + ')}`;
+}
+
+// ===== INDIVIDUAL VIEW =====
+function showIndividual(personId) {
+  currentPersonId = personId;
+  currentView = 'individual';
+  render();
+}
+
+function renderIndividual(container) {
+  const p = getPerson(currentPersonId);
+  if (!p) { currentView = 'team'; render(); return; }
+  
+  const weeks = getVisibleWeeks();
+  const wsStart = formatWeekStart(weeks[0]);
+  const wsEnd = formatWeekStart(weeks[weeks.length-1]);
+  
+  let html = `<div class="indiv-header">
+    <div class="person-info">
+      <div class="avatar" style="background:${p.avatar.color}20;color:${p.avatar.color}">${p.avatar.emoji}</div>
+      <div><h2>${p.name}</h2><span style="color:var(--fg-muted);font-size:.85rem">${p.role || ''}${p.sub_team ? ' · '+p.sub_team : ''}${p.guest ? ' · Guest' : ''}</span></div>
+    </div>
+    <div class="spacer" style="flex:1"></div>
+    <button onclick="downloadICS('${p.id}')" title="Period: ${wsStart} → ${wsEnd}">📅 Export ICS</button>
+    <button onclick="copyLastWeek('${p.id}')" title="Copy last week's assignments to this week">📋 Copy Last Week</button>
+    <button onclick="currentView='team';render()">← Back to Team</button>
+  </div>`;
+  
+  // Run half-day count summary per week
+  const runTarget = store.settings.run_target_persons || 3;
+  html += '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">';
+  weeks.forEach(w => {
+    const ws = formatWeekStart(w);
+    const r = calcRunRatio(p.id, ws);
+    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem">
+      <strong>W${getWeekNumber(w)}</strong>: Run ${r.run}/${r.working} half-days
+    </div>`;
+  });
+  html += '</div>';
+  
+  // Full half-day grid
+  html += '<table class="indiv-grid"><thead><tr><th>Date</th><th>Day</th><th>AM</th><th>PM</th></tr></thead><tbody>';
+  weeks.forEach(w => {
+    const days = getWeekDays(w);
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const ds = fmtDate(d);
+      const dayName = dayNames[di];
+      html += `<tr><td>${ds}</td><td>${dayName}</td>`;
+      ['am','pm'].forEach(slot => {
+        const key = getSlotKey(p.id, ds, slot);
+        const slotData = store.planning[key];
+        const cls = getSlotClass(slotData);
+        let label = getSlotLabel(slotData);
+        html += `<td class="slot-cell ${cls}" onclick="openCellEditor('${p.id}','${ds}','${slot}')">${label}</td>`;
+      });
+      html += '</tr>';
+    });
+  });
+  html += '</tbody></table>';
+  
+  container.innerHTML = html;
+}
+
+function getSlotLabel(slotData) {
+  if (!slotData || slotData.state === 'not_filled') return '—';
+  if (slotData.state === 'undetermined') return '?';
+  if (slotData.away) return slotData.away.type.replace('_',' ');
+  let parts = [];
+  if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
+  if (slotData.run) parts.push('🏃');
+  return parts.join(' ') || '—';
+}
+
+// ===== RUN COVERAGE VIEW =====
+function renderRunCoverage(container) {
+  const weeks = getVisibleWeeks();
+  const mode = store.settings.run_mode;
+  const runTarget = store.settings.run_target_persons || 3;
+  
+  let html = `<h2>Run Coverage — Target: ${runTarget} persons per half-day</h2>
+  <div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+    <label>Mode: </label>
+    <select onchange="store.settings.run_mode=this.value;saveStore();render()">
+      <option value="ratio" ${mode==='ratio'?'selected':''}>Ratio</option>
+      <option value="rotation" ${mode==='rotation'?'selected':''}>Rotation</option>
+    </select>
+  </div>
+  <div class="run-view">`;
+  
+  weeks.forEach(w => {
+    const ws = formatWeekStart(w);
+    const coverage = calcRunCoveragePerSlot(ws);
+    let anyBelow = false;
+    
+    html += `<div class="week-card">
+      <div class="week-title">Week ${getWeekNumber(w)} — ${ws}</div>`;
+    
+    // Per-half-day coverage table
+    html += '<table class="slot-coverage-table"><thead><tr><th>Day</th><th>AM</th><th>PM</th></tr></thead><tbody>';
+    coverage.forEach(day => {
+      ['am','pm'].forEach(slot => { if (day[slot].onRun < runTarget) anyBelow = true; });
+      const amCls = day.am.onRun < runTarget ? 'below' : 'met';
+      const pmCls = day.pm.onRun < runTarget ? 'below' : 'met';
+      html += `<tr><td>${day.dayName}</td><td class="${amCls}">${day.am.onRun}/${runTarget}</td><td class="${pmCls}">${day.pm.onRun}/${runTarget}</td></tr>`;
+    });
+    html += '</tbody></table>';
+    
+    if (anyBelow) {
+      html += `<div class="warning-banner">⚠️ Some half-day slots below target of ${runTarget} persons on run</div>`;
+    }
+    
+    // List who's on run
+    if (mode === 'rotation') {
+      const runPeople = getRunPeople(ws);
+      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${runPeople.length > 0 ? runPeople.map(p => p.name).join(', ') : 'None assigned'}</div>`;
+      html += `<div style="margin-top:4px"><button onclick="showRotationModal('${ws}')">Assign Run Person</button></div>`;
+    } else {
+      const people = getActivePeople();
+      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => `${p.avatar.emoji} ${p.name} (${calcRunRatio(p.id, ws).run}h)`);
+      if (runPeople.length > 0) html += `<div style="font-size:.75rem;margin-top:4px">On run: ${runPeople.join(', ')}</div>`;
+    }
+    
+    html += '</div>';
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ===== ROTATION MODAL =====
+function showRotationModal(weekStart) {
+  const people = getActivePeople();
+  const current = getRunPeople(weekStart);
+  const currentIds = current.map(p => p.id);
+  
+  let html = `<h2>Assign Run Person — Week ${getWeekNumber(parseDate(weekStart))}</h2>
+  <p style="color:var(--fg-muted);margin-bottom:12px">Select who is on run duty this week.</p>
+  <div style="display:flex;flex-direction:column;gap:6px">`;
+  
+  people.forEach(p => {
+    const checked = currentIds.includes(p.id) ? 'checked' : '';
+    html += `<label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" ${checked} onchange="setRotation('${p.id}','${weekStart}',this.checked);render()">
+      ${p.avatar.emoji} ${p.name}
+    </label>`;
+  });
+  
+  html += '</div><div class="form-actions"><button onclick="closeModal()">Done</button></div>';
+  showModal(html);
+}
+
+// ===== AVAILABILITY VIEW =====
+function renderAvailability(container) {
+  const people = getActivePeople();
+  const now = new Date();
+  const selWeekStart = addWeeks(getWeekStart(now), availabilityWeekOffset);
+  const weekLabel = formatWeekStart(selWeekStart).slice(5);
+  const days = getWeekDays(selWeekStart);
+  const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const today = fmtDate(now);
+  const currentSlot = now.getHours() < 12 ? 'am' : 'pm';
+  const isThisWeek = availabilityWeekOffset === 0;
+  
+  let html = `<h2>Where is everyone — Week ${getWeekNumber(selWeekStart)} (${weekLabel})</h2>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+    <button onclick="availabilityWeekOffset--;render()">◀ Earlier</button>
+    <button onclick="availabilityWeekOffset=0;render()">Today</button>
+    <button onclick="availabilityWeekOffset++;render()">Later ▶</button>
+  </div>`;
+  
+  // Per-person cards for selected week
+  html += '<div class="avail-grid">';
+  people.forEach(p => {
+    // Build mini week summary for this person
+    let slotsHtml = '';
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const ds = fmtDate(d);
+      ['am','pm'].forEach(slot => {
+        const key = getSlotKey(p.id, ds, slot);
+        const sd = store.planning[key];
+        const cls = getSlotClass(sd);
+        const isNow = isThisWeek && ds === today && slot === currentSlot;
+        const bgStyle = cls.includes('project') && projectColorBg(sd) ? ` style="background:${projectColorBg(sd)}"` : '';
+        slotsHtml += `<span class="half-day ${cls}" style="display:inline-block;width:10px;height:10px;border-radius:2px;margin:1px${isNow ? ';outline:2px solid var(--accent)' : ''}"${bgStyle} title="${dayNames[di]} ${slot.toUpperCase()}: ${getSlotLabel(sd)}"></span>`;
+      });
+    });
+    
+    // Current slot status
+    let statusText, statusClass;
+    if (isThisWeek) {
+      const key = getSlotKey(p.id, today, currentSlot);
+      const slotData = store.planning[key];
+      if (!slotData || slotData.state === 'not_filled') { statusText = 'Available'; statusClass = 'available'; }
+      else if (slotData.state === 'undetermined') { statusText = 'Project (TBD)'; statusClass = 'project'; }
+      else if (slotData.away) { statusText = `Away: ${slotData.away.type.replace('_',' ')}`; statusClass = 'away'; }
+      else { const pn = slotData.projects ? slotData.projects.map(p=>p.name).join(', ') : ''; statusText = slotData.run ? `${pn} + Run` : (pn||'Available'); statusClass = slotData.run ? 'run' : 'project'; }
+    } else {
+      statusText = weekLabel;
+      statusClass = 'available';
+    }
+    
+    html += `<div class="avail-card">
+      <div class="name">${p.avatar.emoji} ${p.name}</div>
+      <div class="status ${statusClass}">${escapeHtml(statusText)}</div>
+      <div style="font-size:.75rem;color:var(--fg-muted);margin-top:4px">${p.role || ''}</div>
+      <div style="margin-top:4px">${slotsHtml}</div>
+    </div>`;
+  });
+  html += '</div>';
+  
+  // Week overview summary
+  html += `<h3 style="margin-top:20px">Week Overview — ${weekLabel}</h3>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;font-size:.8rem">`;
+  days.forEach((d, di) => {
+    if (di >= 5) return;
+    const ds = fmtDate(d);
+    let away = 0, run = 0, project = 0, notFilled = 0;
+    people.forEach(p => {
+      ['am','pm'].forEach(slot => {
+        const key = getSlotKey(p.id, ds, slot);
+        const sd = store.planning[key];
+        if (!sd || sd.state === 'not_filled') notFilled++;
+        else if (sd.away) away++;
+        else if (sd.run) run++;
+        else project++;
+      });
+    });
+    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px">
+      <strong>${dayNames[di]}</strong><br>
+      <span style="color:var(--slot-away)">${away} away</span> · 
+      <span style="color:var(--slot-run)">${run} run</span> · 
+      <span style="color:var(--slot-project)">${project} project</span><br>
+      <span style="color:var(--fg-muted)">${notFilled} unassigned</span>
+    </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ===== GUESTS VIEW =====
+function renderGuests(container) {
+  const guests = getActiveGuests();
+  if (guests.length === 0) {
+    container.innerHTML = '<h2>Guests</h2><p style="color:var(--fg-muted)">No guests added yet. <button onclick="showAddPersonModal(true)">Add a Guest</button></p>';
+    return;
+  }
+  
+  const weeks = getVisibleWeeks();
+  
+  let html = `<h2>Guests</h2>
+  <div style="margin-bottom:8px"><button onclick="showAddPersonModal(true)">➕ Add Guest</button></div>
+  <div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Guest</th>`;
+  
+  weeks.forEach((w, wi) => {
+    const ws = formatWeekStart(w);
+    const weekNum = getWeekNumber(w);
+    const sep = wi > 0 ? ' week-start' : '';
+    html += `<th colspan="2" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
+  });
+  html += '</tr><tr><th class="person-col"></th>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri'];
+    days.forEach((d, di) => {
+      if (di >= 5) return;
+      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
+      html += `<th class="day-header${sep}">${dayNames[di]}</th>`;
+    });
+  });
+  html += '</tr></thead><tbody>';
+  
+  guests.forEach(p => {
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')">${p.avatar.emoji} ${p.name}</td>`;
+    const groups = buildSlotGroups(p.id, weeks);
+    groups.forEach(g => {
+      const colspan = g.cells.length;
+      const first = g.cells[0];
+      const last = g.cells[g.cells.length - 1];
+      const cls = getSlotClass(first.slotData);
+      const label = getCellLabel(first.slotData);
+      const sep = (first.dayIdx === 0 && first.weekIdx > 0) ? ' week-start' : '';
+      const cellsJson = JSON.stringify(g.cells.map(c => ({date: c.date, slot: c.slot})));
+      const title = getSlotTitle(p, first.date, first.slot, first.slotData) + (colspan > 1 ? ` → ${last.date} ${last.slot.toUpperCase()}` : '');
+      let bgStyle = '';
+      if (cls.includes('project')) {
+        const bg = projectColorBg(first.slotData);
+        if (bg) bgStyle = ` style="background:${bg}"`;
+      }
+      html += `<td class="half-day ${cls}${sep}" colspan="${colspan}" data-person="${p.id}" data-cells='${cellsJson}' onmousedown="startDrag(event,'${p.id}',this.dataset.cells)" title="${title}"${bgStyle}><span class="cell-label">${escapeHtml(label)}</span></td>`;
+    });
+    html += '</tr>';
+  });
+  
+  html += '</tbody></table></div>';
+  
+  // Navigation
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <button onclick="scrollOffset--;store.settings._scrollOffset=scrollOffset;saveStore();render()">◀ Earlier</button>
+    <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
+    <button onclick="scrollOffset++;store.settings._scrollOffset=scrollOffset;saveStore();render()">Later ▶</button>
+    <button onclick="scrollOffset=0;store.settings._scrollOffset=scrollOffset;saveStore();render()" style="margin-left:8px">Today</button>
+  </div>`;
+  
+  container.innerHTML = html;
+}
+
+// ===== ARCHIVED VIEW =====
+function renderArchived(container) {
+  const archived = getArchivedPeople();
+  
+  let html = `<h2>Archived People</h2>
+  <p style="color:var(--fg-muted);margin-bottom:12px">Archived people are hidden from active views but their data is preserved.</p>`;
+  
+  if (archived.length === 0) {
+    html += '<p style="color:var(--fg-muted)">No archived people.</p>';
+  } else {
+    html += '<div class="people-list">';
+    archived.forEach(p => {
+      html += `<div class="person-card" style="opacity:.7">
+        <div class="avatar" style="background:${p.avatar.color}20;color:${p.avatar.color}">${p.avatar.emoji}</div>
+        <div class="info">
+          <div class="name">${p.name}</div>
+          <div class="meta">${p.role || ''}${p.sub_team ? ' · '+p.sub_team : ''} · Archived: ${p.archived_date || 'unknown'}${p.guest ? ' · Guest' : ''}</div>
+        </div>
+        <div class="actions">
+          <button onclick="unarchivePerson('${p.id}');render()">↩ Restore</button>
+          <button class="danger" onclick="if(confirm('Permanently delete ${p.name} and all their data?')){removePerson('${p.id}');render()}">🗑 Delete</button>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+  
+  container.innerHTML = html;
+}
+
+// ===== PEOPLE MANAGEMENT VIEW =====
+function renderPeople(container) {
+  const active = getActivePeople();
+  const guests = getActiveGuests();
+  
+  let html = `<h2>Team Members</h2>
+  <div style="margin-bottom:8px"><button onclick="showAddPersonModal(false)">➕ Add Team Member</button></div>
+  <div class="people-list">`;
+  
+  active.forEach(p => {
+    html += personCard(p);
+  });
+  html += '</div>';
+  
+  if (guests.length > 0) {
+    html += `<h3 style="margin-top:16px">Guests</h3><div class="people-list">`;
+    guests.forEach(p => {
+      html += personCard(p);
+    });
+    html += '</div>';
+  }
+  
+  container.innerHTML = html;
+}
+
+function personCard(p) {
+  return `<div class="person-card">
+    <div class="avatar" style="background:${p.avatar.color}20;color:${p.avatar.color}">${p.avatar.emoji}</div>
+    <div class="info">
+      <div class="name">${p.name}</div>
+      <div class="meta">${p.role || 'No role'}${p.sub_team ? ' · '+p.sub_team : ''}${p.guest ? ' · Guest' : ''}</div>
+    </div>
+    <div class="actions">
+      <button onclick="showEditPersonModal('${p.id}')">✏ Edit</button>
+      <button onclick="if(confirm('Archive ${p.name}?')){archivePerson('${p.id}');render()}">📦 Archive</button>
+      <button class="danger" onclick="if(confirm('Permanently delete ${p.name} and all their planning data?')){removePerson('${p.id}');render()}">🗑</button>
+    </div>
+  </div>`;
+}
+
+// ===== SETTINGS VIEW =====
+function renderSettings(container) {
+  const s = store.settings;
+  let html = `<h2>Settings</h2>
+  <div class="settings-grid">
+    <div class="field"><label>Window weeks (≥3)</label><input type="number" min="3" value="${s.window_weeks}" onchange="store.settings.window_weeks=Math.max(3,+this.value);saveStore();render()"></div>
+    <div class="field"><label>Prune threshold (weeks)</label><input type="number" min="1" value="${s.prune_weeks}" onchange="store.settings.prune_weeks=Math.max(1,+this.value);saveStore()"></div>
+    <div class="field"><label>Run mode</label><select onchange="store.settings.run_mode=this.value;saveStore();render()">
+      <option value="ratio" ${s.run_mode==='ratio'?'selected':''}>Ratio</option>
+      <option value="rotation" ${s.run_mode==='rotation'?'selected':''}>Rotation</option>
+    </select></div>
+    <div class="field"><label>Run target (persons)</label><input type="number" min="0" value="${s.run_target_persons}" onchange="store.settings.run_target_persons=+this.value;saveStore();render()"></div>
+    <div class="field"><label>Theme</label><select onchange="store.settings.theme=this.value;saveStore();render()">
+      <option value="dracula" ${s.theme==='dracula'?'selected':''}>Dracula</option>
+      <option value="monokai" ${s.theme==='monokai'?'selected':''}>Monokai</option>
+      <option value="light" ${s.theme==='light'?'selected':''}>Light</option>
+    </select></div>
+    <div class="field"><label>Week starts</label><select onchange="store.settings.week_starts=this.value;saveStore();render()">
+      <option value="monday" ${s.week_starts==='monday'?'selected':''}>Monday</option>
+    </select></div>
+  </div>
+  <div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">
+    <button onclick="if(confirm('Prune all planning data older than ${s.prune_weeks} weeks?')){pruneOldData();render()}">🧹 Prune Old Data</button>
+    <button onclick="if(confirm('Clear ALL data and start fresh? This cannot be undone.')){localStorage.removeItem(STORE_KEY);initStore();render()}">⚠️ Reset All Data</button>
+  </div>`;
+  
+  container.innerHTML = html;
+}
+
+function pruneOldData() {
+  pushUndo();
+  const weeks = store.settings.prune_weeks || 12;
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - weeks * 7);
+  const cutoffStr = fmtDate(cutoff);
+  
+  Object.keys(store.planning).forEach(key => {
+    const parts = key.split('|');
+    if (parts.length >= 2 && parts[1] < cutoffStr) {
+      delete store.planning[key];
+    }
+  });
+  saveStore();
+}
+
+// ===== DRAG SELECTION SYSTEM =====
+
+function startDrag(event, personId, cellsJson) {
+  event.preventDefault();
+  const cells = typeof cellsJson === 'string' ? JSON.parse(cellsJson) : cellsJson;
+  dragState = {
+    personId,
+    startCells: cells,
+    currentCells: cells.slice(),
+    isDragging: false
+  };
+  // Add mouseup listener (will fire after drag or simple click)
+  document.addEventListener('mouseup', endDrag);
+}
+
+function extendDrag(event) {
+  if (!dragState) return;
+  const td = event.target.closest('td.half-day');
+  if (!td) return;
+  const personId = td.dataset.person;
+  if (personId !== dragState.personId) return;
+  // Query all half-day tds in the same row and compute range from data-cells attributes
+  const row = td.parentElement;
+  const allTds = Array.from(row.querySelectorAll('td.half-day'));
+  const startCellsStr = JSON.stringify(dragState.startCells);
+  const startIdx = allTds.findIndex(t => t.dataset.cells === startCellsStr || JSON.stringify(JSON.parse(t.dataset.cells)) === startCellsStr);
+  const endIdx = allTds.indexOf(td);
+  if (startIdx < 0 || endIdx < 0) return;
+  dragState.isDragging = true;
+  // Collect all cells from start to end
+  const lo = Math.min(startIdx, endIdx);
+  const hi = Math.max(startIdx, endIdx);
+  let allCells = [];
+  for (let i = lo; i <= hi; i++) {
+    const dc = allTds[i].dataset.cells;
+    if (dc) allCells = allCells.concat(JSON.parse(dc));
+  }
+  dragState.currentCells = allCells;
+  // Highlight
+  clearDragHighlight();
+  for (let i = lo; i <= hi; i++) allTds[i].classList.add('in-range');
+  allTds[lo].classList.add('selected');
+  allTds[hi].classList.add('selected');
+}
+
+function clearDragHighlight() {
+  document.querySelectorAll('.half-day.selected, .half-day.in-range').forEach(td => {
+    td.classList.remove('selected');
+    td.classList.remove('in-range');
+  });
+}
+
+function endDrag(event) {
+  document.removeEventListener('mouseup', endDrag);
+  if (!dragState) return;
+  const cells = dragState.currentCells;
+  const wasDrag = dragState.isDragging;
+  const personId = dragState.personId;
+  clearDragHighlight();
+  dragState = null;
+  if (cells.length <= 1 || !wasDrag) {
+    // Single click — open single cell editor
+    const c = cells[0];
+    openCellEditor(personId, c.date, c.slot);
+  } else {
+    // Range — open range editor
+    openRangeEditor(personId, cells);
+  }
+}
+
+// Global mousemove for drag extension
+document.addEventListener('mousemove', extendDrag);
+
+// ===== RANGE EDITOR =====
+let rangeEditorCells = null;
+
+function openRangeEditor(personId, cells) {
+  rangeEditorCells = cells;
+  rangeEditorCells._personId = personId;
+  const first = cells[0];
+  const last = cells[cells.length - 1];
+  const p = getPerson(personId);
+  const name = p ? p.name : personId;
+  
+  let html = `<h2>Edit Range — ${name}</h2>
+    <p style="color:var(--fg-muted);margin-bottom:12px">${cells.length} half-day slots: ${first.date} ${first.slot.toUpperCase()} → ${last.date} ${last.slot.toUpperCase()}</p>
+    <div class="form-row"><label>Project name</label><input type="text" id="range-project" placeholder="e.g. Atlas"></div>
+    <div class="form-row"><label>
+      <input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty
+    </label></div>
+    <div style="margin:12px 0;border-top:1px solid var(--border)"></div>
+    <div class="form-row"><label>Or set Away type:</label>
+      <select id="range-away-type">
+        <option value="">— None —</option>
+        <option value="vacation">Vacation</option>
+        <option value="public_holiday">Public holiday</option>
+        <option value="sick_leave">Sick leave</option>
+        <option value="training">Training</option>
+        <option value="conference">Conference</option>
+        <option value="parental_leave">Parental leave</option>
+        <option value="sabbatical">Sabbatical</option>
+        <option value="other">Other</option>
+      </select>
+    </div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button onclick="applyRangeUndetermined()">Set Undetermined</button>
+      <button onclick="applyRangeClear()">Clear All</button>
+      <button class="primary" onclick="applyRangeEditor()">Apply to All</button>
+    </div>`;
+  showModal(html);
+}
+
+function applyRangeEditor() {
+  if (!rangeEditorCells) return;
+  const projName = document.getElementById('range-project').value.trim();
+  const run = document.getElementById('range-run').checked;
+  const awayType = document.getElementById('range-away-type').value;
+  
+  pushUndo();
+  rangeEditorCells.forEach(c => {
+    if (awayType) {
+      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: { type: awayType, note: '' }, projects: [], run: false });
+    } else if (projName) {
+      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: null, projects: [{ name: projName, pct: 100 }], run });
+    } else if (run) {
+      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: null, projects: [], run: true });
+    }
+  });
+  saveStore();
+  rangeEditorCells = null;
+  closeModal();
+  render();
+}
+
+function applyRangeUndetermined() {
+  if (!rangeEditorCells) return;
+  pushUndo();
+  rangeEditorCells.forEach(c => {
+    setSlotNoUndo(getCellPersonId(c), c.date, c.slot, { state: 'undetermined', away: null, projects: [], run: false });
+  });
+  saveStore();
+  rangeEditorCells = null;
+  closeModal();
+  render();
+}
+
+function applyRangeClear() {
+  if (!rangeEditorCells) return;
+  pushUndo();
+  rangeEditorCells.forEach(c => {
+    setSlotNoUndo(getCellPersonId(c), c.date, c.slot, null);
+  });
+  saveStore();
+  rangeEditorCells = null;
+  closeModal();
+  render();
+}
+
+function getCellPersonId(cell) {
+  return cell.personId || (rangeEditorCells && rangeEditorCells._personId) || null;
+}
+
+function setSlotNoUndo(personId, date, slot, data) {
+  const key = getSlotKey(personId, date, slot);
+  if (data === null || (data && data.state === 'not_filled')) {
+    delete store.planning[key];
+  } else {
+    store.planning[key] = data;
+  }
+}
+
+// ===== CELL EDITOR =====
+let editorPersonId = null;
+let editorDate = null;
+let editorSlot = null;
+
+function openCellEditor(personId, date, slot) {
+  editorPersonId = personId;
+  editorDate = date;
+  editorSlot = slot;
+  
+  const slotData = getSlot(personId, date, slot) || getDefaultSlot();
+  const editor = document.getElementById('cell-editor');
+  
+  const p = getPerson(personId);
+  const name = p ? p.name : personId;
+  
+  let html = `<div style="font-weight:600;margin-bottom:8px">${name} · ${date} ${slot.toUpperCase()}</div>
+  <div class="tabs">
+    <button class="active" data-tab="project" onclick="switchEditorTab('project')">Project</button>
+    <button data-tab="away" onclick="switchEditorTab('away')">Away</button>
+    <button data-tab="undetermined" onclick="setUndetermined()">Undetermined</button>
+    <button data-tab="clear" onclick="clearSlot()">Clear</button>
+  </div>`;
+  
+  // Project tab
+  const isAway = slotData && slotData.away;
+  const isUndetermined = slotData && slotData.state === 'undetermined';
+  const projects = (slotData && slotData.projects) ? clone(slotData.projects) : [{ name: '', pct: 100 }];
+  const runChecked = slotData && slotData.run;
+  
+  html += `<div id="editor-tab-project" class="tab-content ${isAway || isUndetermined ? 'hidden' : ''}">
+    <div id="project-list">`;
+  projects.forEach((proj, i) => {
+    html += `<div class="project-row">
+      <input type="text" value="${proj.name}" placeholder="Project name" data-idx="${i}" onchange="updateProjectName(${i},this.value)">
+      <input type="number" min="0" max="100" value="${proj.pct}" data-idx="${i}" onchange="updateProjectPct(${i},+this.value)">
+      <span>%</span>
+      ${projects.length > 1 ? `<button onclick="removeProject(${i})">✕</button>` : ''}
+    </div>`;
+  });
+  html += `</div>
+    <button onclick="addProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
+    <div class="pct-total" id="pct-total">Total: ${sum(projects.map(p=>p.pct))}%</div>
+    <div style="margin-top:8px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" ${runChecked ? 'checked' : ''} onchange="editorRunToggle=this.checked"> 🏃 Run duty
+      </label>
+    </div>
+  </div>`;
+  
+  // Away tab
+  const awayTypes = ['vacation','public_holiday','sick_leave','training','conference','parental_leave','sabbatical','other'];
+  const currentAway = isAway ? slotData.away.type : '';
+  const currentNote = isAway ? (slotData.away.note || '') : '';
+  
+  html += `<div id="editor-tab-away" class="tab-content ${isAway ? '' : 'hidden'}">
+    <div class="form-row"><label>Type</label><select id="away-type">`;
+  awayTypes.forEach(t => {
+    html += `<option value="${t}" ${currentAway === t ? 'selected' : ''}>${t.replace('_',' ')}</option>`;
+  });
+  html += `</select></div>
+    <div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div>
+    <button onclick="applyAway()" class="primary">Apply Away</button>
+  </div>`;
+  
+  html += `<div class="form-actions">
+    <button onclick="closeCellEditor()">Cancel</button>
+    <button onclick="applyProjectEditor()" class="primary">Save</button>
+  </div>`;
+  
+  editor.innerHTML = html;
+  editor.classList.remove('hidden');
+  
+  // Position near the click
+  // We'll just center it for simplicity
+  editor.style.top = '50%';
+  editor.style.left = '50%';
+  editor.style.transform = 'translate(-50%,-50%)';
+  
+  // Store run toggle state
+  window.editorRunToggle = runChecked;
+}
+
+function switchEditorTab(tab) {
+  const editor = document.getElementById('cell-editor');
+  editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active'));
+  editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden'));
+  const tabBtn = editor.querySelector(`.tabs button[data-tab="${tab}"]`);
+  if (tabBtn) tabBtn.classList.add('active');
+  const tabContent = document.getElementById(`editor-tab-${tab}`);
+  if (tabContent) tabContent.classList.remove('hidden');
+}
+
+function addProject() {
+  const list = document.getElementById('project-list');
+  const idx = list.children.length;
+  const div = document.createElement('div');
+  div.className = 'project-row';
+  div.innerHTML = `<input type="text" value="" placeholder="Project name" data-idx="${idx}" onchange="updateProjectName(${idx},this.value)">
+    <input type="number" min="0" max="100" value="50" data-idx="${idx}" onchange="updateProjectPct(${idx},+this.value)">
+    <span>%</span>
+    <button onclick="removeProject(${idx})">✕</button>`;
+  list.appendChild(div);
+  updatePctTotal();
+}
+
+function removeProject(idx) {
+  const rows = document.getElementById('project-list').children;
+  if (rows.length <= 1) return;
+  rows[idx].remove();
+  // Re-index
+  Array.from(document.getElementById('project-list').children).forEach((row, i) => {
+    row.querySelectorAll('input').forEach(inp => inp.dataset.idx = i);
+    row.querySelector('button').onclick = () => removeProject(i);
+  });
+  updatePctTotal();
+}
+
+function updateProjectName(idx, val) {
+  updatePctTotal();
+}
+
+function updateProjectPct(idx, val) {
+  updatePctTotal();
+}
+
+function updatePctTotal() {
+  const rows = document.getElementById('project-list').children;
+  let total = 0;
+  Array.from(rows).forEach(row => {
+    const pctInput = row.querySelector('input[type="number"]');
+    if (pctInput) total += +pctInput.value || 0;
+  });
+  const el = document.getElementById('pct-total');
+  el.textContent = `Total: ${total}%`;
+  el.classList.toggle('over', total > 100);
+}
+
+function applyAway() {
+  const type = document.getElementById('away-type').value;
+  const note = document.getElementById('away-note').value;
+  const data = { state: 'filled', away: { type, note }, projects: [], run: false };
+  setSlot(editorPersonId, editorDate, editorSlot, data);
+  closeCellEditor();
+  render();
+}
+
+function setUndetermined() {
+  const data = { state: 'undetermined', away: null, projects: [], run: false };
+  setSlot(editorPersonId, editorDate, editorSlot, data);
+  closeCellEditor();
+  render();
+}
+
+function clearSlot() {
+  setSlot(editorPersonId, editorDate, editorSlot, null);
+  closeCellEditor();
+  render();
+}
+
+function applyProjectEditor() {
+  const rows = document.getElementById('project-list').children;
+  const projects = [];
+  let total = 0;
+  Array.from(rows).forEach(row => {
+    const name = row.querySelector('input[type="text"]').value.trim();
+    const pct = +row.querySelector('input[type="number"]').value || 0;
+    if (name) {
+      projects.push({ name, pct });
+      total += pct;
+    }
+  });
+  
+  if (total > 100) {
+    alert('Total project percentage cannot exceed 100%. Current total: ' + total + '%');
+    return;
+  }
+  
+  const data = {
+    state: 'filled',
+    away: null,
+    projects: projects.length > 0 ? projects : [],
+    run: !!window.editorRunToggle
+  };
+  
+  if (data.projects.length === 0 && !data.run) {
+    data.state = 'not_filled';
+  }
+  
+  setSlot(editorPersonId, editorDate, editorSlot, data);
+  closeCellEditor();
+  render();
+}
+
+function closeCellEditor() {
+  document.getElementById('cell-editor').classList.add('hidden');
+  editorPersonId = null;
+  editorDate = null;
+  editorSlot = null;
+}
+
+// ===== MODAL SYSTEM =====
+function showModal(html) {
+  document.getElementById('modal-content').innerHTML = html;
+  document.getElementById('overlay').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('overlay').classList.add('hidden');
+}
+
+document.getElementById('overlay').addEventListener('click', (e) => {
+  if (e.target === e.currentTarget) closeModal();
+});
+
+// ===== ADD/EDIT PERSON MODAL =====
+function showAddPersonModal(isGuest) {
+  showModal(`
+    <h2>${isGuest ? 'Add Guest' : 'Add Team Member'}</h2>
+    <div class="form-row"><label>Name *</label><input type="text" id="person-name" placeholder="Full name"></div>
+    <div class="form-row"><label>Role / Title</label><input type="text" id="person-role" placeholder="e.g. Backend Dev"></div>
+    <div class="form-row"><label>Sub-team</label><input type="text" id="person-team" placeholder="e.g. Platform"></div>
+    <div class="form-row"><label>Emoji avatar</label><input type="text" id="person-emoji" value="👤" maxlength="2" style="width:60px"></div>
+    <div class="form-row"><label>Default projects (comma separated)</label><input type="text" id="person-projects" placeholder="Atlas, Beacon"></div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="submitAddPerson(${isGuest})">Add</button>
+    </div>
+  `);
+}
+
+function submitAddPerson(isGuest) {
+  const name = document.getElementById('person-name').value.trim();
+  if (!name) { alert('Name is required.'); return; }
+  const projects = document.getElementById('person-projects').value.split(',').map(s => s.trim()).filter(Boolean);
+  addPerson({
+    name,
+    role: document.getElementById('person-role').value.trim(),
+    sub_team: document.getElementById('person-team').value.trim(),
+    emoji: document.getElementById('person-emoji').value.trim() || '👤',
+    default_projects: projects,
+    guest: isGuest
+  });
+  closeModal();
+  render();
+}
+
+function showEditPersonModal(personId) {
+  const p = getPerson(personId);
+  if (!p) return;
+  showModal(`
+    <h2>Edit ${p.name}</h2>
+    <div class="form-row"><label>Name</label><input type="text" id="edit-name" value="${p.name}"></div>
+    <div class="form-row"><label>Role / Title</label><input type="text" id="edit-role" value="${p.role || ''}"></div>
+    <div class="form-row"><label>Sub-team</label><input type="text" id="edit-team" value="${p.sub_team || ''}"></div>
+    <div class="form-row"><label>Emoji avatar</label><input type="text" id="edit-emoji" value="${p.avatar.emoji}" maxlength="2" style="width:60px"></div>
+    <div class="form-row"><label>Default projects (comma separated)</label><input type="text" id="edit-projects" value="${(p.default_projects || []).join(', ')}"></div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="submitEditPerson('${personId}')">Save</button>
+    </div>
+  `);
+}
+
+function submitEditPerson(personId) {
+  const name = document.getElementById('edit-name').value.trim();
+  if (!name) { alert('Name is required.'); return; }
+  const projects = document.getElementById('edit-projects').value.split(',').map(s => s.trim()).filter(Boolean);
+  updatePerson(personId, {
+    name,
+    role: document.getElementById('edit-role').value.trim(),
+    sub_team: document.getElementById('edit-team').value.trim(),
+    avatar: { emoji: document.getElementById('edit-emoji').value.trim() || '👤', color: getPerson(personId).avatar.color },
+    default_projects: projects
+  });
+  closeModal();
+  render();
+}
+
+// ===== IMPORT / EXPORT =====
+function showImportModal() {
+  showModal(`
+    <h2>Import TOML</h2>
+    <p style="color:var(--fg-muted);margin-bottom:12px">Choose a TOML file exported from this app, or a public holidays file.</p>
+    <div class="form-row">
+      <label>Import mode</label>
+      <select id="import-mode">
+        <option value="merge">Merge (add to existing data)</option>
+        <option value="replace">Replace (clear all data first)</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>File type</label>
+      <select id="import-type">
+        <option value="planning">Planning data (people + planning)</option>
+        <option value="holidays">Public holidays</option>
+      </select>
+    </div>
+    <div class="form-row">
+      <label>Select file</label>
+      <input type="file" id="import-file" accept=".toml,.json">
+    </div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="doImport()">Import</button>
+    </div>
+  `);
+}
+
+function doImport() {
+  const file = document.getElementById('import-file').files[0];
+  if (!file) { alert('Please select a file.'); return; }
+  const mode = document.getElementById('import-mode').value;
+  const type = document.getElementById('import-type').value;
+  
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const text = e.target.result;
+      if (type === 'holidays') {
+        importHolidays(text);
+      } else {
+        importPlanning(text, mode);
+      }
+      closeModal();
+      render();
+    } catch(err) {
+      alert('Import error: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+}
+
+function importPlanning(text, mode) {
+  const data = parseTOML(text);
+  
+  if (mode === 'replace') {
+    if (!confirm('This will replace ALL current data. Continue?')) return;
+    pushUndo();
+    store.people = [];
+    store.planning = {};
+    store.rotation = {};
+  } else {
+    pushUndo();
+  }
+  
+  // Import people
+  if (data.people && Array.isArray(data.people)) {
+    data.people.forEach(p => {
+      // Check if person already exists by name
+      const existing = store.people.find(sp => sp.name === p.name);
+      if (existing) {
+        // Update existing
+        Object.assign(existing, {
+          role: p.role || existing.role,
+          sub_team: p.sub_team || existing.sub_team,
+          default_projects: p.default_projects || existing.default_projects,
+          status: p.status || existing.status,
+          guest: p.guest !== undefined ? p.guest : existing.guest
+        });
+        if (p.avatar) {
+          existing.avatar = { emoji: p.avatar.emoji || existing.avatar.emoji, color: p.avatar.color || existing.avatar.color };
+        }
+      } else {
+        // Add new — preserve original ID if present
+        store.people.push({
+          id: p.id || uid(),
+          name: p.name || 'Unknown',
+          role: p.role || '',
+          sub_team: p.sub_team || '',
+          avatar: { emoji: (p.avatar && p.avatar.emoji) || '👤', color: (p.avatar && p.avatar.color) || randomColor() },
+          start_date: p.start_date || fmtDate(new Date()),
+          default_projects: p.default_projects || [],
+          status: p.status || 'active',
+          archived_date: p.archived_date || '',
+          guest: !!p.guest
+        });
+      }
+    });
+  }
+  
+  // Import planning
+  if (data.planning && Array.isArray(data.planning)) {
+    data.planning.forEach(entry => {
+      // Find person by name or id
+      const person = store.people.find(p => p.id === entry.person_id || p.name === entry.person_id);
+      if (!person) return;
+      
+      const key = getSlotKey(person.id, entry.date, entry.slot);
+      store.planning[key] = {
+        state: entry.state || 'filled',
+        away: entry.away_type ? { type: entry.away_type, note: entry.away_note || '' } : null,
+        projects: entry.projects || [],
+        run: !!entry.run
+      };
+    });
+  }
+  
+  // Import settings
+  if (data.settings) {
+    Object.keys(data.settings).forEach(k => {
+      if (store.settings[k] !== undefined) {
+        store.settings[k] = data.settings[k];
+      }
+    });
+  }
+  
+  saveStore();
+}
+
+function importHolidays(text) {
+  const data = parseTOML(text);
+  if (!data.holidays || !Array.isArray(data.holidays)) {
+    alert('No holidays found in file.');
+    return;
+  }
+  
+  const count = data.holidays.length;
+  if (!confirm(`Found ${count} holidays. Auto-fill as away entries for all active team members?`)) return;
+  
+  pushUndo();
+  const people = getActivePeople();
+  let filled = 0;
+  
+  data.holidays.forEach(h => {
+    const date = h.date;
+    if (!date) return;
+    people.forEach(p => {
+      ['am','pm'].forEach(slot => {
+        const key = getSlotKey(p.id, date, slot);
+        // Don't overwrite existing entries
+        if (!store.planning[key]) {
+          store.planning[key] = {
+            state: 'filled',
+            away: { type: 'public_holiday', note: h.label || '' },
+            projects: [],
+            run: false
+          };
+          filled++;
+        }
+      });
+    });
+  });
+  
+  saveStore();
+  alert(`Filled ${filled} half-day slots with public holidays.`);
+}
+
+function doExport() {
+  const now = new Date();
+  const counter = String(store.settings.export_counter).padStart(3, '0');
+  const filename = `${fmtExportTS(now)}-${counter}.toml`;
+  store.settings.export_counter++;
+  saveStore();
+  
+  // Build TOML
+  let toml = `schema_version = 1\nexported_at = "${fmtDateTime(now)}"\n\n`;
+  
+  // Settings
+  toml += '[settings]\n';
+  Object.keys(store.settings).forEach(k => {
+    if (k === 'export_counter') return;
+    toml += `${k} = ${serializeTOMLValue(store.settings[k])}\n`;
+  });
+  
+  // People
+  toml += '\n';
+  store.people.forEach(p => {
+    toml += `[[people]]\n`;
+    toml += `id = "${p.id}"\n`;
+    toml += `name = "${p.name}"\n`;
+    toml += `role = "${p.role || ''}"\n`;
+    toml += `sub_team = "${p.sub_team || ''}"\n`;
+    toml += `avatar = { emoji = "${p.avatar.emoji}", color = "${p.avatar.color}" }\n`;
+    toml += `start_date = "${p.start_date || ''}"\n`;
+    toml += `default_projects = [${(p.default_projects || []).map(s => '"'+s.replace(/"/g,'\\"')+'"').join(', ')}]\n`;
+    toml += `status = "${p.status}"\n`;
+    toml += `archived_date = "${p.archived_date || ''}"\n`;
+    toml += `guest = ${p.guest ? 'true' : 'false'}\n\n`;
+  });
+  
+  // Planning
+  const planningKeys = Object.keys(store.planning).sort();
+  planningKeys.forEach(key => {
+    const parts = key.split('|');
+    if (parts.length < 3) return;
+    const [personId, date, slot] = parts;
+    const data = store.planning[key];
+    if (!data || data.state === 'not_filled') return;
+    
+    toml += `[[planning]]\n`;
+    toml += `person_id = "${personId}"\n`;
+    toml += `date = "${date}"\n`;
+    toml += `slot = "${slot}"\n`;
+    toml += `state = "${data.state}"\n`;
+    toml += `away_type = "${data.away ? data.away.type : ''}"\n`;
+    toml += `away_note = "${data.away ? (data.away.note || '') : ''}"\n`;
+    toml += `run = ${data.run ? 'true' : 'false'}\n`;
+    if (data.projects && data.projects.length > 0) {
+      toml += `projects = [\n`;
+      data.projects.forEach(proj => {
+        toml += `  { name = "${proj.name}", pct = ${proj.pct} },\n`;
+      });
+      toml += `]\n`;
+    } else {
+      toml += `projects = []\n`;
+    }
+    toml += '\n';
+  });
+  
+  downloadFile(toml, filename, 'text/toml');
+}
+
+function downloadICS(personId) {
+  const weeks = getVisibleWeeks();
+  const startDate = formatWeekStart(weeks[0]);
+  const endDate = formatWeekStart(weeks[weeks.length-1]);
+  const ics = generateICS(personId, startDate, endDate);
+  const p = getPerson(personId);
+  const name = p ? p.name.replace(/[^a-zA-Z0-9]/g, '_') : personId;
+  downloadFile(ics, `${name}_planning.ics`, 'text/calendar');
+}
+
+function downloadFile(content, filename, mimeType) {
+  const blob = new Blob([content], { type: mimeType + ';charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ===== COPY LAST WEEK =====
+function copyLastWeek(personId) {
+  const weeks = getVisibleWeeks();
+  if (weeks.length < 2) { alert('Need at least 2 weeks visible to copy.'); return; }
+  
+  const currentWeekStart = weeks[0];
+  const prevWeekStart = addWeeks(currentWeekStart, -1);
+  
+  const currentDays = getWeekDays(currentWeekStart);
+  const prevDays = getWeekDays(prevWeekStart);
+  
+  if (!confirm('Copy last week\'s assignments to this week? Away entries will be skipped.')) return;
+  
+  pushUndo();
+  let copied = 0;
+  
+  currentDays.forEach((d, di) => {
+    if (di >= 5) return; // skip weekends
+    const currentDate = fmtDate(d);
+    const prevDate = fmtDate(prevDays[di]);
+    
+    ['am','pm'].forEach(slot => {
+      const prevKey = getSlotKey(personId, prevDate, slot);
+      const prevData = store.planning[prevKey];
+      if (!prevData || prevData.state === 'not_filled' || prevData.away) return; // skip away
+      
+      const currentKey = getSlotKey(personId, currentDate, slot);
+      // Don't overwrite existing data
+      if (store.planning[currentKey]) return;
+      
+      store.planning[currentKey] = clone(prevData);
+      copied++;
+    });
+  });
+  
+  saveStore();
+  render();
+  if (copied > 0) {
+    // Show brief feedback
+    const status = document.getElementById('status-left');
+    status.textContent = `📋 Copied ${copied} slots from last week`;
+    setTimeout(() => updateStatusBar(), 2000);
+  } else {
+    alert('No slots were copied (all may already be filled or last week was empty).');
+  }
+}
+
+// ===== HELP =====
+function showHelp() {
+  showModal(`
+    <h2>Keyboard Shortcuts</h2>
+    <div class="help-shortcuts">
+      <span><kbd>Tab</kbd> / <kbd>Shift+Tab</kbd></span><span>Move between cells</span>
+      <span><kbd>Enter</kbd></span><span>Open cell editor</span>
+      <span><kbd>Escape</kbd></span><span>Close editor / cancel</span>
+      <span><kbd>U</kbd></span><span>Mark cell as undetermined</span>
+      <span><kbd>R</kbd></span><span>Toggle run on cell</span>
+      <span><kbd>Delete</kbd> / <kbd>Backspace</kbd></span><span>Clear cell</span>
+      <span><kbd>Ctrl+Z</kbd></span><span>Undo</span>
+      <span><kbd>Ctrl+E</kbd></span><span>Export TOML</span>
+    </div>
+    <h3 style="margin-top:16px">About</h3>
+    <p style="color:var(--fg-muted);font-size:.85rem">Team Activity Visualizer V1 — Self-hosted HTML5 application for planning and visualizing team activity across away time, project time, and run time.</p>
+    <div class="form-actions"><button onclick="closeModal()">Close</button></div>
+  `);
+}
+
+// ===== KEYBOARD SHORTCUTS =====
+document.addEventListener('keydown', (e) => {
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+  if (e.ctrlKey && e.key === 'e') { e.preventDefault(); doExport(); }
+  if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
+  // Disable single-key shortcuts when focus is in an input/select/textarea
+  const tag = (e.target.tagName || '').toLowerCase();
+  const inField = tag === 'input' || tag === 'select' || tag === 'textarea';
+  if (inField) return;
+  if (e.key === 'u' && !e.ctrlKey && !e.metaKey && editorPersonId) {
+    setUndetermined();
+  }
+  if (e.key === 'r' && !e.ctrlKey && !e.metaKey && editorPersonId) {
+    window.editorRunToggle = !window.editorRunToggle;
+    const editor = document.getElementById('cell-editor');
+    const cb = editor.querySelector('input[type="checkbox"]');
+    if (cb) cb.checked = window.editorRunToggle;
+  }
+});
+
+// ===== NAVIGATION =====
+document.querySelectorAll('.nav-btn[data-view]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    currentView = btn.dataset.view;
+    currentPersonId = null;
+    render();
+  });
+});
+
+document.getElementById('btn-undo').addEventListener('click', undo);
+document.getElementById('btn-export').addEventListener('click', doExport);
+document.getElementById('btn-import').addEventListener('click', showImportModal);
+document.getElementById('btn-help').addEventListener('click', showHelp);
+
+// ===== INIT =====
+const hasData = initStore();
+
+// Restore scroll offset from store (must be after initStore)
+if (store.settings._scrollOffset !== undefined) {
+  scrollOffset = store.settings._scrollOffset;
+}
+
+document.documentElement.setAttribute('data-theme', store.settings.theme || 'dracula');
+
+if (!hasData) {
+  // Show onboarding
+  document.getElementById('main').innerHTML = `
+    <div id="onboarding">
+      <h1>👋 Welcome to Team Visualizer</h1>
+      <p>Plan and visualize your team's activity across away time, project time, and run time.</p>
+      <p style="font-size:.85rem">This is a self-hosted single-file app. All data stays in your browser's local storage.</p>
+      <div class="actions">
+        <button onclick="loadSampleData()">📦 Load Sample Data</button>
+        <button onclick="showAddPersonModal(false)">➕ Add Team Member</button>
+        <button onclick="showImportModal()">⬆ Import TOML</button>
+      </div>
+    </div>
+  `;
+} else {
+  render();
+}
+
+console.log('📊 Team Activity Visualizer V1 loaded');
+console.log(`👥 ${store.people.length} people, 📅 ${Object.keys(store.planning).length} planning entries`);
+</script>
+</body>
+</html>
