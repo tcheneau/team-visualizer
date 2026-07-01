@@ -64,6 +64,7 @@ h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-
 .grid-table .half-day.merged-mid{border-left:none;border-radius:0}
 .grid-table .half-day.merged-end{border-radius:0 3px 3px 0}
 .grid-table .summary-row td{font-size:.7rem;padding:4px 6px}
+.grid-table .subteam-row td{background:var(--surface-hover);font-weight:700;font-size:.75rem;padding:4px 8px;text-align:left;border-bottom:2px solid var(--accent)}
 .grid-table .summary-row .bar{display:inline-block;height:8px;border-radius:4px;margin:0 2px}
 /* ===== INDIVIDUAL VIEW ===== */
 .indiv-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
@@ -966,6 +967,7 @@ let currentView = 'team';
 let currentPersonId = null;
 let scrollOffset = 0; // weeks offset from current week
 let availabilityWeekOffset = 0; // weeks offset for availability view
+let teamGroupBy = 'name'; // 'name' or 'sub_team'
 
 // ===== DRAG SELECTION STATE =====
 let dragState = null; // {startCell, cells: Set, personId, isDragging}
@@ -1054,8 +1056,31 @@ function renderTeamGrid(container) {
   });
   html += '</tr></thead><tbody>';
   
-  // Person rows — using merge groups with colspan
-  people.forEach(p => {
+  // Person rows — grouped by name or sub_team
+  let peopleSorted = people.slice().sort((a,b) => a.name.localeCompare(b.name));
+  if (teamGroupBy === 'sub_team') {
+    // Sort by sub_team then name; empty sub_team goes last
+    peopleSorted.sort((a,b) => {
+      const sa = (a.sub_team || '').toLowerCase();
+      const sb = (b.sub_team || '').toLowerCase();
+      if (sa === '' && sb !== '') return 1;
+      if (sb === '' && sa !== '') return -1;
+      if (sa !== sb) return sa.localeCompare(sb);
+      return a.name.localeCompare(b.name);
+    });
+  }
+  
+  let lastSubTeam = null;
+  peopleSorted.forEach(p => {
+    // Sub-team header row
+    if (teamGroupBy === 'sub_team') {
+      const st = p.sub_team || 'Other';
+      if (st !== lastSubTeam) {
+        lastSubTeam = st;
+        const cols = weeks.reduce((n, w) => n + getWeekDays(w).filter((d, di) => di < 5).length * 2, 0);
+        html += `<tr class="subteam-row"><td colspan="${cols + 1}">${escapeHtml(st)}</td></tr>`;
+      }
+    }
     html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${p.role || ''} · ${p.sub_team || ''}">${p.avatar.emoji} ${p.name}</td>`;
     const groups = buildSlotGroups(p.id, weeks);
     groups.forEach(g => {
@@ -1110,6 +1135,9 @@ function renderTeamGrid(container) {
     <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
     <button onclick="scrollOffset++;store.settings._scrollOffset=scrollOffset;saveStore();render()">Later ▶</button>
     <button onclick="scrollOffset=0;store.settings._scrollOffset=scrollOffset;saveStore();render()" style="margin-left:8px">Today</button>
+    <span style="margin-left:12px;color:var(--fg-muted)">Group by:</span>
+    <button onclick="teamGroupBy='name';render()" style="font-weight:${teamGroupBy==='name'?'700':'400'}">Name</button>
+    <button onclick="teamGroupBy='sub_team';render()" style="font-weight:${teamGroupBy==='sub_team'?'700':'400'}">Sub-team</button>
   </div>`;
   
   // Legend
@@ -2017,13 +2045,41 @@ document.getElementById('overlay').addEventListener('click', (e) => {
 });
 
 // ===== ADD/EDIT PERSON MODAL =====
+// ===== EMOJI PICKER =====
+const EMOJI_SET = ['😀','😎','🤩','😇','🙃','🧐','🤓','😈','👻','🤖','👽','🐱','🐶','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🦋','🐢','🦄','🐉','🐲','🦅','🦉','🐧','🐺','🦝','🐙','🦓','🦒','🌟','⚡','🔥','❄️','🌈','🎨','🔧','⚙️','🚀','🛸','🏆','🎮','🎸','🎺','🎹','☕','🍕','🍔','🌮','🍣','🍩','🍪','🎉','✨','💎','🔧','⚡','🎯','🧩','📚','🔬','🧪','💻','🖥️','⌨️','📊','📈','💡','🔑','🗺️','🧭','⏰','📅','📌','✅','❌','⚠️','💡','🔔','📣','💬','👁️','🧠','💪','🤝','👋','🙌','👍'];
+
+function toggleEmojiPicker(inputId, btn) {
+  let picker = document.getElementById('emoji-picker');
+  if (picker) { picker.remove(); return; }
+  picker = document.createElement('div');
+  picker.id = 'emoji-picker';
+  picker.style.cssText = 'position:fixed;z-index:300;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;box-shadow:0 4px 24px rgba(0,0,0,.3);max-width:320px;max-height:240px;overflow-y:auto;display:grid;grid-template-columns:repeat(12,1fr);gap:2px';
+  EMOJI_SET.forEach(em => {
+    const b = document.createElement('button');
+    b.textContent = em;
+    b.style.cssText = 'font-size:1.2rem;padding:2px;border:none;background:transparent;cursor:pointer;border-radius:4px';
+    b.onmouseenter = () => b.style.background = 'var(--surface-hover)';
+    b.onmouseleave = () => b.style.background = 'transparent';
+    b.onclick = (e) => { e.preventDefault(); document.getElementById(inputId).value = em; picker.remove(); };
+    picker.appendChild(b);
+  });
+  const rect = btn.getBoundingClientRect();
+  picker.style.top = (rect.bottom + 4) + 'px';
+  picker.style.left = rect.left + 'px';
+  document.body.appendChild(picker);
+  setTimeout(() => {
+    const close = (ev) => { if (!picker.contains(ev.target) && ev.target !== btn) { picker.remove(); document.removeEventListener('click', close); } };
+    document.addEventListener('click', close);
+  }, 0);
+}
+
 function showAddPersonModal(isGuest) {
   showModal(`
     <h2>${isGuest ? 'Add Guest' : 'Add Team Member'}</h2>
     <div class="form-row"><label>Name *</label><input type="text" id="person-name" placeholder="Full name"></div>
     <div class="form-row"><label>Role / Title</label><input type="text" id="person-role" placeholder="e.g. Backend Dev"></div>
     <div class="form-row"><label>Sub-team</label><input type="text" id="person-team" placeholder="e.g. Platform"></div>
-    <div class="form-row"><label>Emoji avatar</label><input type="text" id="person-emoji" value="👤" maxlength="2" style="width:60px"></div>
+    <div class="form-row"><label>Emoji avatar</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="person-emoji" value="👤" maxlength="4" style="width:60px"><button type="button" onclick="toggleEmojiPicker('person-emoji',this)" style="padding:4px 8px">😀</button></div></div>
     <div class="form-row"><label>Default projects (comma separated)</label><input type="text" id="person-projects" placeholder="Atlas, Beacon"></div>
     <div class="form-actions">
       <button onclick="closeModal()">Cancel</button>
@@ -2056,7 +2112,7 @@ function showEditPersonModal(personId) {
     <div class="form-row"><label>Name</label><input type="text" id="edit-name" value="${p.name}"></div>
     <div class="form-row"><label>Role / Title</label><input type="text" id="edit-role" value="${p.role || ''}"></div>
     <div class="form-row"><label>Sub-team</label><input type="text" id="edit-team" value="${p.sub_team || ''}"></div>
-    <div class="form-row"><label>Emoji avatar</label><input type="text" id="edit-emoji" value="${p.avatar.emoji}" maxlength="2" style="width:60px"></div>
+    <div class="form-row"><label>Emoji avatar</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-emoji" value="${p.avatar.emoji}" maxlength="4" style="width:60px"><button type="button" onclick="toggleEmojiPicker('edit-emoji',this)" style="padding:4px 8px">😀</button></div></div>
     <div class="form-row"><label>Default projects (comma separated)</label><input type="text" id="edit-projects" value="${(p.default_projects || []).join(', ')}"></div>
     <div class="form-actions">
       <button onclick="closeModal()">Cancel</button>
