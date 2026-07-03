@@ -61,10 +61,34 @@ h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-
 .grid-table .half-day.selected{outline:2px solid var(--accent);outline-offset:0;z-index:5;opacity:.6}
 .grid-table .half-day.in-range{outline:1px solid var(--accent);outline-offset:0;z-index:4}
 .grid-table .half-day.merged-start{border-radius:3px 0 0 3px}
-.grid-table .half-day.merged-mid{border-left:none;border-radius:0}
+.grid-table .half-day.merged-cont{border-left-color:transparent;border-radius:0}
 .grid-table .half-day.merged-end{border-radius:0 3px 3px 0}
 .grid-table .summary-row td{font-size:.7rem;padding:4px 6px}
 .grid-table .subteam-row td{background:var(--surface-hover);font-weight:700;font-size:.75rem;padding:4px 8px;text-align:left;border-bottom:2px solid var(--accent)}
+.grid-table td.on-call{box-shadow:inset 0 2px 0 0 var(--accent),inset 0 -2px 0 0 var(--accent)}
+.oncall-btn{display:inline-flex;align-items:center;gap:2px;font-size:.7rem;padding:1px 4px;border-radius:3px;cursor:pointer;margin-left:4px;vertical-align:middle}
+.oncall-btn.active{background:var(--accent);color:#fff;font-weight:700}
+/* ===== PROJECTS ===== */
+.project-card{background:var(--surface);border:1px solid var(--border);border-radius:6px;padding:12px;margin-bottom:8px}
+.project-card .proj-header{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+.project-card .proj-header .proj-emoji{font-size:1.3rem}
+.project-card .proj-header .proj-name{font-weight:700;font-size:1rem}
+.project-card .proj-desc{font-size:.85rem;color:var(--fg-muted);margin-bottom:6px}
+.project-card .proj-meta{font-size:.8rem;color:var(--fg-muted);display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.project-card .proj-people{font-size:.8rem;margin-top:6px;color:var(--fg-muted)}
+.status-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.75rem;font-weight:600;color:#fff}
+.gantt-container{overflow-x:auto;margin-top:12px}
+.gantt-table{border-collapse:collapse;width:100%;min-width:600px}
+.gantt-table th,.gantt-table td{border:1px solid var(--border);padding:3px;font-size:.75rem;text-align:center}
+.gantt-table th{background:var(--surface);position:sticky;top:0}
+.gantt-row{height:28px}
+.gantt-bar{height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:.7rem;color:#fff;overflow:hidden;white-space:nowrap;position:relative;cursor:pointer}
+.gantt-bar:hover{outline:2px solid var(--accent);outline-offset:1px}
+.gantt-now-line{position:absolute;top:0;bottom:0;width:2px;background:var(--danger);z-index:5;pointer-events:none}
+.gantt-bar.no-people{border:2px dashed var(--danger)}
+.gantt-bar.status-unstarted{opacity:.5}
+.gantt-bar.status-paused{opacity:.6;background:#ff9800}
+.gantt-bar.status-done{opacity:.4}
 .grid-table .summary-row .bar{display:inline-block;height:8px;border-radius:4px;margin:0 2px}
 /* ===== INDIVIDUAL VIEW ===== */
 .indiv-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
@@ -156,6 +180,7 @@ h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-
     <button class="nav-btn" data-view="guests">Guests</button>
     <button class="nav-btn" data-view="archived">Archived</button>
     <button class="nav-btn" data-view="people">People</button>
+    <button class="nav-btn" data-view="projects">Projects</button>
     <button class="nav-btn" data-view="settings">Settings</button>
     <span class="spacer"></span>
     <span class="topbar-right">
@@ -197,6 +222,19 @@ const daysSince = (d1,d2) => Math.round((d2-d1)/(86400000));
 const clone = o => JSON.parse(JSON.stringify(o));
 const sum = arr => arr.reduce((a,b)=>a+b,0);
 const escapeHtml = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+
+// Date picker helper: convert native date input (YYYY-MM-DD) to text input (YYYY/MM/DD)
+function datePickerToText(picker, textId) {
+  if (picker.value) {
+    document.getElementById(textId).value = picker.value.replace(/-/g, '/');
+  }
+}
+
+// Generate a <datalist> of all project names for autocomplete
+function projectNamesDatalist() {
+  const names = store.projects.filter(p => p.status !== 'done').map(p => p.name).filter(Boolean);
+  return '<datalist id="project-names">' + names.map(n => `<option value="${escapeHtml(n)}">`).join('') + '</datalist>';
+}
 
 // Project color hashing — same project name = same color across people
 function projectColor(name) {
@@ -282,7 +320,9 @@ function initStore() {
     settings: clone(defaultSettings),
     people: [],
     planning: {},
-    rotation: {}
+    rotation: {},
+    oncall: {},
+    projects: []
   };
   saveStore();
   return false;
@@ -307,6 +347,8 @@ function migrateStore() {
   if (!store.people) store.people = [];
   if (!store.planning) store.planning = {};
   if (!store.rotation) store.rotation = {};
+  if (!store.oncall) store.oncall = {};
+  if (!store.projects) store.projects = [];
   saveStore();
 }
 
@@ -450,12 +492,139 @@ function setRotation(personId, weekStart, isRunPerson) {
   saveStore();
 }
 
+// Assign run person: set rotation flag AND fill the week's schedule with RUN
+function assignRunPerson(personId, weekStart) {
+  const p = getPerson(personId);
+  const name = p ? p.name : 'This person';
+  const weekStartObj = parseDate(weekStart);
+  if (!weekStartObj) return false;
+  const days = getWeekDays(weekStartObj);
+  
+  // Count existing filled slots
+  let filledCount = 0;
+  days.forEach((d, di) => {
+    if (di >= 5 && !showWeekend) return;
+    const ds = fmtDate(d);
+    ['am','pm'].forEach(slot => {
+      const sd = store.planning[getSlotKey(personId, ds, slot)];
+      if (sd && sd.state !== 'not_filled') filledCount++;
+    });
+  });
+  
+  // Warn if data exists
+  if (filledCount > 0) {
+    if (!confirm(`${name} already has ${filledCount} filled half-day slot(s) for this week. Overwrite all with RUN duty?`)) {
+      return false;
+    }
+  }
+  
+  pushUndo();
+  // Set rotation flag
+  store.rotation[`${personId}|${weekStart}`] = true;
+  // Fill all working half-days with RUN
+  days.forEach((d, di) => {
+    if (di >= 5 && !showWeekend) return;
+    const ds = fmtDate(d);
+    ['am','pm'].forEach(slot => {
+      store.planning[getSlotKey(personId, ds, slot)] = { state: 'filled', away: null, projects: [], run: true };
+    });
+  });
+  saveStore();
+  return true;
+}
+
 function isRunPerson(personId, weekStart) {
   return !!store.rotation[`${personId}|${weekStart}`];
 }
 
 function getRunPeople(weekStart) {
   return store.people.filter(p => p.status === 'active' && !p.guest && isRunPerson(p.id, weekStart));
+}
+
+// ===== ON-CALL =====
+function setOnCall(personId, weekStart, isOnCall) {
+  pushUndo();
+  const key = `${personId}|${weekStart}`;
+  if (isOnCall) store.oncall[key] = true;
+  else delete store.oncall[key];
+  saveStore();
+}
+
+function isOnCall(personId, weekStart) {
+  return !!store.oncall[`${personId}|${weekStart}`];
+}
+
+function getOnCallPeople(weekStart) {
+  return store.people.filter(p => p.status === 'active' && isOnCall(p.id, weekStart));
+}
+
+function toggleOnCall(personId, weekStart) {
+  setOnCall(personId, weekStart, !isOnCall(personId, weekStart));
+  render();
+}
+
+// ===== PROJECTS =====
+const PROJECT_STATUSES = ['unstarted','in_progress','paused','done'];
+const STATUS_COLORS = { unstarted:'#6c757d', in_progress:'#4caf50', paused:'#ff9800', done:'#9e9e9e' };
+const STATUS_LABELS = { unstarted:'Unstarted', in_progress:'In Progress', paused:'Paused', done:'Done' };
+
+function getProject(id) { return store.projects.find(p => p.id === id); }
+function getProjectByName(name) { return store.projects.find(p => p.name.toLowerCase() === name.toLowerCase()); }
+
+function addProject(data) {
+  pushUndo();
+  const p = {
+    id: uid(),
+    name: data.name || 'New Project',
+    emoji: data.emoji || '📁',
+    description: data.description || '',
+    url: data.url || '',
+    start_date: data.start_date || '',
+    end_date: data.end_date || '',
+    status: data.status || 'unstarted'
+  };
+  store.projects.push(p);
+  saveStore();
+  return p;
+}
+
+function updateProject(id, data) {
+  pushUndo();
+  const p = getProject(id);
+  if (!p) return;
+  Object.assign(p, data);
+  saveStore();
+}
+
+function removeProject(id) {
+  pushUndo();
+  store.projects = store.projects.filter(p => p.id !== id);
+  saveStore();
+}
+
+// Find all people who have been assigned to a project (scan planning data)
+function getPeopleOnProject(projectName) {
+  const personIds = new Set();
+  Object.entries(store.planning).forEach(([key, sd]) => {
+    if (sd.projects && sd.projects.some(p => p.name.toLowerCase() === projectName.toLowerCase())) {
+      const pid = key.split('|')[0];
+      personIds.add(pid);
+    }
+  });
+  return [...personIds].map(id => getPerson(id)).filter(Boolean);
+}
+
+// Find people currently assigned (in a given date range or all)
+function getPeopleOnProjectNow(projectName) {
+  const personIds = new Set();
+  const now = fmtDate(new Date());
+  Object.entries(store.planning).forEach(([key, sd]) => {
+    if (!sd.projects) return;
+    if (!sd.projects.some(p => p.name.toLowerCase() === projectName.toLowerCase())) return;
+    const parts = key.split('|');
+    if (parts[1] >= now) personIds.add(parts[0]);
+  });
+  return [...personIds].map(id => getPerson(id)).filter(Boolean);
 }
 
 // ===== RUN COVERAGE CALCULATIONS (headcount model) =====
@@ -492,7 +661,7 @@ function calcRunCoveragePerSlot(weekStart) {
   const result = []; // [{day, dayName, am: {onRun, away, avail}, pm: {...}}]
   const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   days.forEach((d, di) => {
-    if (di >= 5) return;
+    if (di >= 5 && !showWeekend) return;
     const ds = fmtDate(d);
     const dayResult = { dayName: dayNames[di], date: ds, am: { onRun: 0, away: 0, avail: 0 }, pm: { onRun: 0, away: 0, avail: 0 } };
     ['am','pm'].forEach(slot => {
@@ -881,7 +1050,7 @@ function loadSampleData() {
       people.forEach((p, pi) => {
         if (p.guest) return; // skip guests for now
         
-        if (isWeekend) return; // skip weekends
+        if (isWeekend && !showWeekend) return; // skip weekends
         
         // Alice: vacation week 2 (Mon-Wed)
         if (p.name === 'Alice Martin' && w === 1 && di < 3) {
@@ -947,7 +1116,7 @@ function loadSampleData() {
       const ws = addWeeks(weekStart, w);
       const days = getWeekDays(ws);
       days.forEach((d, di) => {
-        if (di >= 5) return;
+        if (di >= 5 && !showWeekend) return;
         const ds = fmtDate(d);
         [sophie, thomas].forEach((p, pi) => {
           const proj = p.default_projects[0] || 'Undetermined';
@@ -966,8 +1135,12 @@ function loadSampleData() {
 let currentView = 'team';
 let currentPersonId = null;
 let scrollOffset = 0; // weeks offset from current week
-let availabilityWeekOffset = 0; // weeks offset for availability view
+let availabilityDayOffset = 0; // day offset for availability view
 let teamGroupBy = 'name'; // 'name' or 'sub_team'
+let projectsViewMode = 'general'; // 'general' or 'gantt'
+let projectsSortBy = 'name'; // 'name', 'start', 'end'
+let projectsHideDone = true;
+let showWeekend = false; // show Sat/Sun in team grid
 
 // ===== DRAG SELECTION STATE =====
 let dragState = null; // {startCell, cells: Set, personId, isDragging}
@@ -1007,6 +1180,7 @@ function render() {
     case 'archived': renderArchived(main); break;
     case 'people': renderPeople(main); break;
     case 'settings': renderSettings(main); break;
+    case 'projects': renderProjects(main); break;
     case 'individual': renderIndividual(main); break;
     default: renderTeamGrid(main);
   }
@@ -1038,28 +1212,28 @@ function renderTeamGrid(container) {
   
   let html = '<div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Person</th>';
   
+  const slotsPerWeek = showWeekend ? 14 : 10;
   weeks.forEach((w, wi) => {
     const ws = formatWeekStart(w);
     const weekNum = getWeekNumber(w);
     const sep = wi > 0 ? ' week-start' : '';
-    html += `<th colspan="2" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
+    html += `<th colspan="${slotsPerWeek}" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
   });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => {
     const days = getWeekDays(w);
-    const dayNames = ['Mon','Tue','Wed','Thu','Fri'];
+    const dayNames = showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
     days.forEach((d, di) => {
-      if (di >= 5) return;
+      if (di >= 5 && !showWeekend) return;
       const sep = (di === 0 && wi > 0) ? ' week-start' : '';
-      html += `<th class="day-header${sep}">${dayNames[di]}</th>`;
+      html += `<th colspan="2" class="day-header${sep}">${dayNames[di]}</th>`;
     });
   });
   html += '</tr></thead><tbody>';
   
-  // Person rows — grouped by name or sub_team
+  // Person rows — individual cells with CSS-based visual merging
   let peopleSorted = people.slice().sort((a,b) => a.name.localeCompare(b.name));
   if (teamGroupBy === 'sub_team') {
-    // Sort by sub_team then name; empty sub_team goes last
     peopleSorted.sort((a,b) => {
       const sa = (a.sub_team || '').toLowerCase();
       const sb = (b.sub_team || '').toLowerCase();
@@ -1070,62 +1244,79 @@ function renderTeamGrid(container) {
     });
   }
   
+  // Build slot list for all weeks (for column indexing)
+  const allSlots = [];
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5 && !showWeekend) return;
+      const ds = fmtDate(d);
+      ['am','pm'].forEach(slot => {
+        allSlots.push({ date: ds, slot, weekIdx: wi, dayIdx: di });
+      });
+    });
+  });
+  
   let lastSubTeam = null;
-  peopleSorted.forEach(p => {
+  peopleSorted.forEach((p, rowIdx) => {
     // Sub-team header row
     if (teamGroupBy === 'sub_team') {
       const st = p.sub_team || 'Other';
       if (st !== lastSubTeam) {
         lastSubTeam = st;
-        const cols = weeks.reduce((n, w) => n + getWeekDays(w).filter((d, di) => di < 5).length * 2, 0);
-        html += `<tr class="subteam-row"><td colspan="${cols + 1}">${escapeHtml(st)}</td></tr>`;
+        html += `<tr class="subteam-row"><td colspan="${allSlots.length + 1}">${escapeHtml(st)}</td></tr>`;
       }
     }
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${p.role || ''} · ${p.sub_team || ''}">${p.avatar.emoji} ${p.name}</td>`;
-    const groups = buildSlotGroups(p.id, weeks);
-    groups.forEach(g => {
-      const colspan = g.cells.length;
-      const first = g.cells[0];
-      const last = g.cells[g.cells.length - 1];
-      const cls = getSlotClass(first.slotData);
-      const label = getCellLabel(first.slotData);
-      const sep = (first.dayIdx === 0 && first.weekIdx > 0) ? ' week-start' : '';
-      const cellsJson = JSON.stringify(g.cells.map(c => ({date: c.date, slot: c.slot})));
-      const title = getSlotTitle(p, first.date, first.slot, first.slotData) + (colspan > 1 ? ` → ${last.date} ${last.slot.toUpperCase()}` : '');
-      // Project color via inline style
+    // Check on-call status for visible weeks
+    const firstWeekStart = formatWeekStart(weeks[0]);
+    const onCallAnyWeek = weeks.some(w => isOnCall(p.id, formatWeekStart(w)));
+    const onCallWeeks = weeks.filter(w => isOnCall(p.id, formatWeekStart(w))).map(w => 'W' + getWeekNumber(w));
+    const onCallTooltip = onCallWeeks.length > 0 ? 'On-call: ' + onCallWeeks.join(', ') : 'Click to toggle on-call for week ' + getWeekNumber(weeks[0]);
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${p.role || ''} · ${p.sub_team || ''}">${p.avatar.emoji} ${p.name}<button class="oncall-btn${onCallAnyWeek ? ' active' : ''}" onclick="event.stopPropagation();toggleOnCall('${p.id}','${firstWeekStart}')" title="${onCallTooltip}">📞</button></td>`;
+    
+    // Render individual half-day cells (no colspan)
+    let prevMergeKey = null;
+    allSlots.forEach((sl, colIdx) => {
+      const key = getSlotKey(p.id, sl.date, sl.slot);
+      const slotData = store.planning[key];
+      const cls = getSlotClass(slotData);
+      const label = getCellLabel(slotData);
+      const mk = getMergeKey(slotData, sl.weekIdx);
+      const isMergedCont = (mk === prevMergeKey);
+      const sep = (sl.dayIdx === 0 && sl.slot === 'am' && sl.weekIdx > 0) ? ' week-start' : '';
+      const mergeCls = isMergedCont ? ' merged-cont' : '';
+      const title = getSlotTitle(p, sl.date, sl.slot, slotData);
+      // Only show label on first cell of a merge group (except not-filled which always shows)
+      const showLabel = !isMergedCont || cls.includes('not-filled');
+      // Project color
       let bgStyle = '';
       if (cls.includes('project')) {
-        const bg = projectColorBg(first.slotData);
+        const bg = projectColorBg(slotData);
         if (bg) bgStyle = ` style="background:${bg}"`;
       }
-      html += `<td class="half-day ${cls}${sep}" colspan="${colspan}" data-person="${p.id}" data-cells='${cellsJson}' onmousedown="startDrag(event,'${p.id}',this.dataset.cells)" title="${title}"${bgStyle}><span class="cell-label">${escapeHtml(label)}</span></td>`;
+      const onCallCls = isOnCall(p.id, formatWeekStart(weeks[sl.weekIdx])) ? ' on-call' : '';
+      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}" onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})" title="${title}"${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
+      prevMergeKey = mk;
     });
     html += '</tr>';
   });
   
-  // Summary row — includes run coverage vs target
+  // Summary row — per half-day (AM and PM separately)
   const runTarget = store.settings.run_target_persons || 3;
   html += '<tr class="summary-row"><td class="person-col"><strong>Summary</strong></td>';
-  weeks.forEach((w, wi) => {
-    const days = getWeekDays(w);
-    days.forEach((d, di) => {
-      if (di >= 5) return;
-      const ds = fmtDate(d);
-      let awayCount = 0, runCount = 0, total = 0;
-      people.forEach(p => {
-        ['am','pm'].forEach(slot => {
-          const key = getSlotKey(p.id, ds, slot);
-          const sd = store.planning[key];
-          if (sd && sd.away) awayCount++;
-          if (sd && sd.run) runCount++;
-          total++;
-        });
-      });
-      const availPct = total > 0 ? Math.round(((total - awayCount) / total) * 100) : 0;
-      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
-      const runWarn = runCount < runTarget ? ' style="color:var(--danger);font-weight:600"' : '';
-      html += `<td colspan="2" class="${sep}" style="font-size:.65rem;padding:2px 4px">${availPct}%<br><span ${runWarn}>${runCount}/${runTarget}r</span></td>`;
+  allSlots.forEach((sl, colIdx) => {
+    let awayCount = 0, runCount = 0, total = 0;
+    people.forEach(p => {
+      const key = getSlotKey(p.id, sl.date, sl.slot);
+      const sd = store.planning[key];
+      if (sd && sd.away) awayCount++;
+      if (sd && sd.run) runCount++;
+      total++;
     });
+    const availPct = total > 0 ? Math.round(((total - awayCount) / total) * 100) : 0;
+    const sep = (sl.dayIdx === 0 && sl.slot === 'am' && sl.weekIdx > 0) ? ' week-start' : '';
+    const runWarn = runCount < runTarget ? ' style="color:var(--danger);font-weight:600"' : '';
+    html += `<td class="${sep}" style="font-size:.65rem;padding:2px 4px">${availPct}%<br><span ${runWarn}>${runCount}/${runTarget}r</span></td>`;
   });
   html += '</tr></tbody></table></div>';
   
@@ -1138,6 +1329,7 @@ function renderTeamGrid(container) {
     <span style="margin-left:12px;color:var(--fg-muted)">Group by:</span>
     <button onclick="teamGroupBy='name';render()" style="font-weight:${teamGroupBy==='name'?'700':'400'}">Name</button>
     <button onclick="teamGroupBy='sub_team';render()" style="font-weight:${teamGroupBy==='sub_team'?'700':'400'}">Sub-team</button>
+    <label style="margin-left:12px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${showWeekend?'checked':''} onchange="showWeekend=this.checked;render()" style="width:auto"> Weekends</label>
   </div>`;
   
   // Legend
@@ -1199,7 +1391,7 @@ function buildSlotGroups(personId, weeks) {
   weeks.forEach((w, wi) => {
     const days = getWeekDays(w);
     days.forEach((d, di) => {
-      if (di >= 5) return;
+      if (di >= 5 && !showWeekend) return;
       const ds = fmtDate(d);
       ['am', 'pm'].forEach(slot => {
         const key = getSlotKey(personId, ds, slot);
@@ -1279,7 +1471,7 @@ function renderIndividual(container) {
     const days = getWeekDays(w);
     const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
     days.forEach((d, di) => {
-      if (di >= 5) return;
+      if (di >= 5 && !showWeekend) return;
       const ds = fmtDate(d);
       const dayName = dayNames[di];
       html += `<tr><td>${ds}</td><td>${dayName}</td>`;
@@ -1377,7 +1569,7 @@ function showRotationModal(weekStart) {
   people.forEach(p => {
     const checked = currentIds.includes(p.id) ? 'checked' : '';
     html += `<label style="display:flex;align-items:center;gap:8px;cursor:pointer">
-      <input type="checkbox" ${checked} onchange="setRotation('${p.id}','${weekStart}',this.checked);render()">
+      <input type="checkbox" ${checked} onchange="if(this.checked){if(!assignRunPerson('${p.id}','${weekStart}')){this.checked=false}}else{setRotation('${p.id}','${weekStart}',false)};render()">
       ${p.avatar.emoji} ${p.name}
     </label>`;
   });
@@ -1390,88 +1582,98 @@ function showRotationModal(weekStart) {
 function renderAvailability(container) {
   const people = getActivePeople();
   const now = new Date();
-  const selWeekStart = addWeeks(getWeekStart(now), availabilityWeekOffset);
-  const weekLabel = formatWeekStart(selWeekStart).slice(5);
-  const days = getWeekDays(selWeekStart);
+  const selDay = new Date(now);
+  selDay.setDate(selDay.getDate() + availabilityDayOffset);
+  const selDate = fmtDate(selDay);
   const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+  const dayIdx = (selDay.getDay() + 6) % 7; // 0=Mon
+  const dayName = dayNames[dayIdx];
   const today = fmtDate(now);
+  const isToday = availabilityDayOffset === 0;
   const currentSlot = now.getHours() < 12 ? 'am' : 'pm';
-  const isThisWeek = availabilityWeekOffset === 0;
   
-  let html = `<h2>Where is everyone — Week ${getWeekNumber(selWeekStart)} (${weekLabel})</h2>
+  let html = `<h2>Where is everyone — ${dayName} ${selDate}</h2>
   <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-    <button onclick="availabilityWeekOffset--;render()">◀ Earlier</button>
-    <button onclick="availabilityWeekOffset=0;render()">Today</button>
-    <button onclick="availabilityWeekOffset++;render()">Later ▶</button>
+    <button onclick="availabilityDayOffset--;render()">◀ Previous day</button>
+    <button onclick="availabilityDayOffset=0;render()">Today</button>
+    <button onclick="availabilityDayOffset++;render()">Next day ▶</button>
   </div>`;
   
-  // Per-person cards for selected week
+  // Per-person cards showing AM and PM for the selected day
   html += '<div class="avail-grid">';
   people.forEach(p => {
-    // Build mini week summary for this person
-    let slotsHtml = '';
-    days.forEach((d, di) => {
-      if (di >= 5) return;
-      const ds = fmtDate(d);
-      ['am','pm'].forEach(slot => {
-        const key = getSlotKey(p.id, ds, slot);
-        const sd = store.planning[key];
-        const cls = getSlotClass(sd);
-        const isNow = isThisWeek && ds === today && slot === currentSlot;
-        const bgStyle = cls.includes('project') && projectColorBg(sd) ? ` style="background:${projectColorBg(sd)}"` : '';
-        slotsHtml += `<span class="half-day ${cls}" style="display:inline-block;width:10px;height:10px;border-radius:2px;margin:1px${isNow ? ';outline:2px solid var(--accent)' : ''}"${bgStyle} title="${dayNames[di]} ${slot.toUpperCase()}: ${getSlotLabel(sd)}"></span>`;
-      });
+    ['am','pm'].forEach(slot => {
+      const key = getSlotKey(p.id, selDate, slot);
+      const sd = store.planning[key];
+      const cls = getSlotClass(sd);
+      const label = getSlotLabel(sd);
+      const isNow = isToday && slot === currentSlot;
+      const bgStyle = cls.includes('project') && projectColorBg(sd) ? ` style="background:${projectColorBg(sd)}"` : '';
+      return { slot, cls, label, sd, isNow, bgStyle };
     });
     
-    // Current slot status
-    let statusText, statusClass;
-    if (isThisWeek) {
-      const key = getSlotKey(p.id, today, currentSlot);
-      const slotData = store.planning[key];
-      if (!slotData || slotData.state === 'not_filled') { statusText = 'Available'; statusClass = 'available'; }
-      else if (slotData.state === 'undetermined') { statusText = 'Project (TBD)'; statusClass = 'project'; }
-      else if (slotData.away) { statusText = `Away: ${slotData.away.type.replace('_',' ')}`; statusClass = 'away'; }
-      else { const pn = slotData.projects ? slotData.projects.map(p=>p.name).join(', ') : ''; statusText = slotData.run ? `${pn} + Run` : (pn||'Available'); statusClass = slotData.run ? 'run' : 'project'; }
-    } else {
-      statusText = weekLabel;
-      statusClass = 'available';
+    // AM status
+    const amKey = getSlotKey(p.id, selDate, 'am');
+    const amSd = store.planning[amKey];
+    const amCls = getSlotClass(amSd);
+    const amLabel = getSlotLabel(amSd);
+    const amBgStyle = amCls.includes('project') && projectColorBg(amSd) ? ` style="background:${projectColorBg(amSd)}"` : '';
+    
+    // PM status
+    const pmKey = getSlotKey(p.id, selDate, 'pm');
+    const pmSd = store.planning[pmKey];
+    const pmCls = getSlotClass(pmSd);
+    const pmLabel = getSlotLabel(pmSd);
+    const pmBgStyle = pmCls.includes('project') && projectColorBg(pmSd) ? ` style="background:${projectColorBg(pmSd)}"` : '';
+    
+    // Detailed status text
+    function slotDetail(sd) {
+      if (!sd || sd.state === 'not_filled') return 'Available';
+      if (sd.state === 'undetermined') return 'Project (TBD)';
+      if (sd.away) return `Away: ${sd.away.type.replace('_',' ')}`;
+      const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : '';
+      return sd.run ? `${pn} + Run` : (pn || 'Available');
     }
     
     html += `<div class="avail-card">
       <div class="name">${p.avatar.emoji} ${p.name}</div>
-      <div class="status ${statusClass}">${escapeHtml(statusText)}</div>
-      <div style="font-size:.75rem;color:var(--fg-muted);margin-top:4px">${p.role || ''}</div>
-      <div style="margin-top:4px">${slotsHtml}</div>
+      <div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role || ''}</div>
+      <div style="display:flex;gap:6px;margin-top:4px">
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday && currentSlot === 'am' ? ' ●' : ''}</div>
+          <div class="status ${amCls}"${amBgStyle}${isToday && currentSlot === 'am' ? ' style="outline:2px solid var(--accent);' + (amBgStyle ? amBgStyle.match(/background:[^;"]+/)[0] : '') + '"' : ''}>${escapeHtml(slotDetail(amSd))}</div>
+        </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday && currentSlot === 'pm' ? ' ●' : ''}</div>
+          <div class="status ${pmCls}"${pmBgStyle}${isToday && currentSlot === 'pm' ? ' style="outline:2px solid var(--accent);' + (pmBgStyle ? pmBgStyle.match(/background:[^;"]+/)[0] : '') + '"' : ''}>${escapeHtml(slotDetail(pmSd))}</div>
+        </div>
+      </div>
     </div>`;
   });
   html += '</div>';
   
-  // Week overview summary
-  html += `<h3 style="margin-top:20px">Week Overview — ${weekLabel}</h3>
-  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;font-size:.8rem">`;
-  days.forEach((d, di) => {
-    if (di >= 5) return;
-    const ds = fmtDate(d);
-    let away = 0, run = 0, project = 0, notFilled = 0;
-    people.forEach(p => {
-      ['am','pm'].forEach(slot => {
-        const key = getSlotKey(p.id, ds, slot);
-        const sd = store.planning[key];
-        if (!sd || sd.state === 'not_filled') notFilled++;
-        else if (sd.away) away++;
-        else if (sd.run) run++;
-        else project++;
-      });
+  // Day summary
+  let awayCount = 0, runCount = 0, projectCount = 0, notFilledCount = 0, undeterminedCount = 0;
+  people.forEach(p => {
+    ['am','pm'].forEach(slot => {
+      const key = getSlotKey(p.id, selDate, slot);
+      const sd = store.planning[key];
+      if (!sd || sd.state === 'not_filled') notFilledCount++;
+      else if (sd.state === 'undetermined') undeterminedCount++;
+      else if (sd.away) awayCount++;
+      else if (sd.run) runCount++;
+      else projectCount++;
     });
-    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px">
-      <strong>${dayNames[di]}</strong><br>
-      <span style="color:var(--slot-away)">${away} away</span> · 
-      <span style="color:var(--slot-run)">${run} run</span> · 
-      <span style="color:var(--slot-project)">${project} project</span><br>
-      <span style="color:var(--fg-muted)">${notFilled} unassigned</span>
-    </div>`;
   });
-  html += '</div>';
+  html += `<h3 style="margin-top:20px">Day Summary — ${dayName} ${selDate}</h3>
+  <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.85rem">
+    <span style="color:var(--slot-away)">${awayCount} away</span>
+    <span style="color:var(--slot-run)">${runCount} run</span>
+    <span style="color:var(--slot-project)">${projectCount} project</span>
+    <span style="color:var(--fg-muted)">${undeterminedCount} undetermined</span>
+    <span style="color:var(--fg-muted)">${notFilledCount} unassigned</span>
+  </div>`;
+  
   container.innerHTML = html;
 }
 
@@ -1493,38 +1695,53 @@ function renderGuests(container) {
     const ws = formatWeekStart(w);
     const weekNum = getWeekNumber(w);
     const sep = wi > 0 ? ' week-start' : '';
-    html += `<th colspan="2" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
+    html += `<th colspan="${showWeekend ? 14 : 10}" class="${sep}">W${weekNum} ${ws.slice(5)}</th>`;
   });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => {
     const days = getWeekDays(w);
-    const dayNames = ['Mon','Tue','Wed','Thu','Fri'];
+    const dayNames = showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
     days.forEach((d, di) => {
-      if (di >= 5) return;
+      if (di >= 5 && !showWeekend) return;
       const sep = (di === 0 && wi > 0) ? ' week-start' : '';
-      html += `<th class="day-header${sep}">${dayNames[di]}</th>`;
+      html += `<th colspan="2" class="day-header${sep}">${dayNames[di]}</th>`;
     });
   });
   html += '</tr></thead><tbody>';
   
-  guests.forEach(p => {
+  // Build slot list
+  const allSlots = [];
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5 && !showWeekend) return;
+      const ds = fmtDate(d);
+      ['am','pm'].forEach(slot => allSlots.push({ date: ds, slot, weekIdx: wi, dayIdx: di }));
+    });
+  });
+  
+  guests.forEach((p, rowIdx) => {
     html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')">${p.avatar.emoji} ${p.name}</td>`;
-    const groups = buildSlotGroups(p.id, weeks);
-    groups.forEach(g => {
-      const colspan = g.cells.length;
-      const first = g.cells[0];
-      const last = g.cells[g.cells.length - 1];
-      const cls = getSlotClass(first.slotData);
-      const label = getCellLabel(first.slotData);
-      const sep = (first.dayIdx === 0 && first.weekIdx > 0) ? ' week-start' : '';
-      const cellsJson = JSON.stringify(g.cells.map(c => ({date: c.date, slot: c.slot})));
-      const title = getSlotTitle(p, first.date, first.slot, first.slotData) + (colspan > 1 ? ` → ${last.date} ${last.slot.toUpperCase()}` : '');
+    let prevMergeKey = null;
+    allSlots.forEach((sl, colIdx) => {
+      const key = getSlotKey(p.id, sl.date, sl.slot);
+      const slotData = store.planning[key];
+      const cls = getSlotClass(slotData);
+      const label = getCellLabel(slotData);
+      const mk = getMergeKey(slotData, sl.weekIdx);
+      const isMergedCont = (mk === prevMergeKey);
+      const sep = (sl.dayIdx === 0 && sl.slot === 'am' && sl.weekIdx > 0) ? ' week-start' : '';
+      const mergeCls = isMergedCont ? ' merged-cont' : '';
+      const title = getSlotTitle(p, sl.date, sl.slot, slotData);
+      const showLabel = !isMergedCont || cls.includes('not-filled');
       let bgStyle = '';
       if (cls.includes('project')) {
-        const bg = projectColorBg(first.slotData);
+        const bg = projectColorBg(slotData);
         if (bg) bgStyle = ` style="background:${bg}"`;
       }
-      html += `<td class="half-day ${cls}${sep}" colspan="${colspan}" data-person="${p.id}" data-cells='${cellsJson}' onmousedown="startDrag(event,'${p.id}',this.dataset.cells)" title="${title}"${bgStyle}><span class="cell-label">${escapeHtml(label)}</span></td>`;
+      const onCallCls = isOnCall(p.id, formatWeekStart(weeks[sl.weekIdx])) ? ' on-call' : '';
+      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}" onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})" title="${title}"${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
+      prevMergeKey = mk;
     });
     html += '</tr>';
   });
@@ -1613,6 +1830,353 @@ function personCard(p) {
 }
 
 // ===== SETTINGS VIEW =====
+// ===== PROJECTS VIEW =====
+function renderProjects(container) {
+  let html = `<h2>Projects</h2>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <button onclick="projectsViewMode='general';render()" style="font-weight:${projectsViewMode==='general'?'700':'400'}">📋 General</button>
+    <button onclick="projectsViewMode='gantt';render()" style="font-weight:${projectsViewMode==='gantt'?'700':'400'}">📊 Gantt</button>
+    <span style="margin-left:8px"></span>
+    <button onclick="showAddProjectModal()">➕ Add Project</button>
+    <button onclick="showProjectImportModal()">⬆ Import CSV</button>
+  </div>`;
+  
+  if (store.projects.length === 0) {
+    html += '<p style="color:var(--fg-muted)">No projects yet. Add one manually or import via CSV.</p>';
+    container.innerHTML = html;
+    return;
+  }
+  
+  if (projectsViewMode === 'gantt') {
+    html += renderGanttView();
+  } else {
+    html += renderGeneralProjectView();
+  }
+  container.innerHTML = html;
+}
+
+function renderGeneralProjectView() {
+  let html = `<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem">
+      <input type="checkbox" ${projectsHideDone?'checked':''} onchange="projectsHideDone=this.checked;render()" style="width:auto"> Hide completed
+    </label>
+  </div>`;
+  
+  let projects = store.projects.slice().sort((a,b) => a.name.localeCompare(b.name));
+  if (projectsHideDone) projects = projects.filter(p => p.status !== 'done');
+  
+  if (projects.length === 0) {
+    html += '<p style="color:var(--fg-muted)">All projects are done (hidden). Toggle "Hide completed" to see them.</p>';
+    return html;
+  }
+  
+  projects.forEach(proj => {
+    const people = getPeopleOnProject(proj.name);
+    const peopleNow = getPeopleOnProjectNow(proj.name);
+    const statusColor = STATUS_COLORS[proj.status] || '#6c757d';
+    const peopleNames = people.map(p => `${p.avatar.emoji} ${p.name}`).join(', ') || 'No one assigned yet';
+    
+    html += `<div class="project-card">
+      <div class="proj-header">
+        <span class="proj-emoji">${proj.emoji}</span>
+        <span class="proj-name">${escapeHtml(proj.name)}</span>
+        <span class="status-badge" style="background:${statusColor}">${STATUS_LABELS[proj.status]||proj.status}</span>
+        <span style="margin-left:auto;display:flex;gap:4px">
+          <button onclick="showEditProjectModal('${proj.id}')" style="font-size:.75rem;padding:2px 8px">✏</button>
+          <button class="danger" onclick="if(confirm('Delete ${escapeHtml(proj.name)}?')){removeProject('${proj.id}');render()}" style="font-size:.75rem;padding:2px 8px">🗑</button>
+        </span>
+      </div>
+      ${proj.description ? `<div class="proj-desc">${escapeHtml(proj.description)}</div>` : ''}
+      <div class="proj-meta">
+        ${proj.start_date ? `<span>📅 ${proj.start_date}</span>` : ''}
+        ${proj.end_date ? `<span>→ ${proj.end_date}</span>` : ''}
+        ${proj.url ? `<a href="${escapeHtml(proj.url)}" target="_blank" style="font-size:.8rem">🔗 Link</a>` : ''}
+      </div>
+      <div class="proj-people">👥 ${escapeHtml(peopleNames)}${peopleNow.length > 0 ? ` (${peopleNow.length} currently)` : ''}</div>
+    </div>`;
+  });
+  return html;
+}
+
+function renderGanttView() {
+  let projects = store.projects.slice();
+  // Projects with no dates (start AND end) always go to bottom
+  const withDates = projects.filter(p => p.start_date || p.end_date);
+  const noDates = projects.filter(p => !p.start_date && !p.end_date);
+  // Sort dated projects by selected criteria
+  if (projectsSortBy === 'start') withDates.sort((a,b) => (a.start_date||'9999').localeCompare(b.start_date||'9999'));
+  else if (projectsSortBy === 'end') withDates.sort((a,b) => (a.end_date||'9999').localeCompare(b.end_date||'9999'));
+  else withDates.sort((a,b) => a.name.localeCompare(b.name));
+  // No-date projects sorted by name at the bottom
+  noDates.sort((a,b) => a.name.localeCompare(b.name));
+  projects = withDates.concat(noDates);
+  
+  // Determine date range
+  const now = new Date();
+  const nowStr = fmtDate(now);
+  let minDate = nowStr, maxDate = nowStr;
+  projects.forEach(p => {
+    if (p.start_date && p.start_date < minDate) minDate = p.start_date;
+    if (p.end_date && p.end_date > maxDate) maxDate = p.end_date;
+  });
+  // Pad range by 1 week
+  const minD = parseDate(minDate) || now;
+  const maxD = parseDate(maxDate) || now;
+  minD.setDate(minD.getDate() - 7);
+  maxD.setDate(maxD.getDate() + 7);
+  const totalDays = Math.max(1, Math.round((maxD - minD) / 86400000));
+  
+  // Generate week markers
+  const weeks = [];
+  const w = new Date(minD);
+  w.setHours(0,0,0,0);
+  w.setDate(w.getDate() - ((w.getDay() + 6) % 7)); // Monday
+  while (w <= maxD) {
+    weeks.push(new Date(w));
+    w.setDate(w.getDate() + 7);
+  }
+  const colCount = weeks.length;
+  const colWidth = 60; // px per week
+  
+  let html = `<div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">
+    <span style="font-size:.85rem;color:var(--fg-muted)">Sort by:</span>
+    <button onclick="projectsSortBy='name';render()" style="font-weight:${projectsSortBy==='name'?'700':'400'}">Name</button>
+    <button onclick="projectsSortBy='start';render()" style="font-weight:${projectsSortBy==='start'?'700':'400'}">Start date</button>
+    <button onclick="projectsSortBy='end';render()" style="font-weight:${projectsSortBy==='end'?'700':'400'}">End date</button>
+  </div>`;
+  
+  if (projects.length === 0) return '<p style="color:var(--fg-muted)">No projects to display.</p>';
+  
+  // Gantt table
+  html += '<div class="gantt-container"><table class="gantt-table"><thead><tr><th style="text-align:left;min-width:140px;position:sticky;left:0;z-index:3;background:var(--surface)">Project</th>';
+  weeks.forEach(wk => {
+    const label = 'W' + getWeekNumber(wk) + ' ' + fmtDate(wk).slice(5);
+    html += `<th style="min-width:${colWidth}px">${label}</th>`;
+  });
+  html += '</tr></thead><tbody>';
+  
+  projects.forEach(proj => {
+    const statusColor = STATUS_COLORS[proj.status] || '#6c757d';
+    const projStart = proj.start_date ? parseDate(proj.start_date) : null;
+    const projEnd = proj.end_date ? parseDate(proj.end_date) : null;
+    const peopleNow = getPeopleOnProjectNow(proj.name);
+    const hasNoPeopleNow = proj.status === 'in_progress' && peopleNow.length === 0;
+    
+    // Compute bar position in week columns
+    let startCol = 0, endCol = colCount - 1;
+    if (projStart) {
+      const dayDiff = Math.round((projStart - weeks[0]) / 86400000);
+      startCol = Math.max(0, Math.floor(dayDiff / 7));
+    }
+    if (projEnd) {
+      const dayDiff = Math.round((projEnd - weeks[0]) / 86400000);
+      endCol = Math.min(colCount - 1, Math.ceil(dayDiff / 7));
+    }
+    if (startCol > endCol) endCol = startCol;
+    
+    const span = endCol - startCol + 1;
+    const peopleText = peopleNow.map(p => p.name).join(', ') || 'No one currently assigned';
+    const tooltip = `${escapeHtml(proj.name)} — ${STATUS_LABELS[proj.status]||proj.status}\nPeople now: ${peopleText}`;
+    
+    // Now line position (fractional column)
+    const nowDayDiff = Math.round((now - weeks[0]) / 86400000);
+    const nowCol = nowDayDiff / 7;
+    
+    // Build row with empty cells and bar spanning
+    html += `<tr class="gantt-row"><td style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:1">${proj.emoji} ${escapeHtml(proj.name)}</td>`;
+    for (let c = 0; c < colCount; c++) {
+      if (c === startCol) {
+        const nowInBar = nowCol >= startCol && nowCol <= endCol + 1;
+        let barStyle = `background:${statusColor};`;
+        if (hasNoPeopleNow && nowInBar) barStyle += 'border:2px dashed var(--danger);';
+        if (proj.status === 'paused') barStyle += 'opacity:.6;background:#ff9800;';
+        if (proj.status === 'done') barStyle += 'opacity:.4;';
+        if (proj.status === 'unstarted') barStyle += 'opacity:.5;';
+        html += `<td colspan="${span}" style="padding:3px;position:relative">
+          <div class="gantt-bar status-${proj.status}${hasNoPeopleNow ? ' no-people' : ''}" style="${barStyle}" title="${tooltip}">${escapeHtml(proj.name)}</div>
+          ${nowInBar ? `<div class="gantt-now-line" style="left:${((nowCol - c) / span) * 100}%"></div>` : ''}
+        </td>`;
+        c += span - 1;
+      } else {
+        html += '<td></td>';
+      }
+    }
+    html += '</tr>';
+  });
+  
+  html += '</tbody></table></div>';
+  return html;
+}
+
+// ===== PROJECT MODALS =====
+function showAddProjectModal() {
+  showModal(`
+    <h2>Add Project</h2>
+    <div class="form-row"><label>Name *</label><input type="text" id="proj-name" placeholder="e.g. Atlas"></div>
+    <div class="form-row"><label>Emoji</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="proj-emoji" value="📁" maxlength="4" style="width:60px"><button type="button" onclick="toggleEmojiPicker('proj-emoji',this)" style="padding:4px 8px">😀</button></div></div>
+    <div class="form-row"><label>Description</label><textarea id="proj-desc" rows="2" placeholder="Short description"></textarea></div>
+    <div class="form-row"><label>URL</label><input type="text" id="proj-url" placeholder="https://..."></div>
+    <div style="display:flex;gap:12px">
+      <div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="proj-start" placeholder="2025/01/06" style="flex:1"><input type="date" id="proj-start-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'proj-start')"></div></div>
+      <div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="proj-end" placeholder="2025/03/28" style="flex:1"><input type="date" id="proj-end-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'proj-end')"></div></div>
+    </div>
+    <div class="form-row"><label>Status</label><select id="proj-status">
+      ${PROJECT_STATUSES.map(s => `<option value="${s}">${STATUS_LABELS[s]}</option>`).join('')}
+    </select></div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="submitAddProject()">Add</button>
+    </div>
+  `);
+}
+
+function submitAddProject() {
+  const name = document.getElementById('proj-name').value.trim();
+  if (!name) { alert('Name is required.'); return; }
+  if (getProjectByName(name)) { alert('A project with this name already exists.'); return; }
+  addProject({
+    name,
+    emoji: document.getElementById('proj-emoji').value.trim() || '📁',
+    description: document.getElementById('proj-desc').value.trim(),
+    url: document.getElementById('proj-url').value.trim(),
+    start_date: document.getElementById('proj-start').value.trim(),
+    end_date: document.getElementById('proj-end').value.trim(),
+    status: document.getElementById('proj-status').value
+  });
+  closeModal();
+  render();
+}
+
+function showEditProjectModal(id) {
+  const proj = getProject(id);
+  if (!proj) return;
+  showModal(`
+    <h2>Edit ${escapeHtml(proj.name)}</h2>
+    <div class="form-row"><label>Name *</label><input type="text" id="edit-proj-name" value="${escapeHtml(proj.name)}"></div>
+    <div class="form-row"><label>Emoji</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-proj-emoji" value="${proj.emoji}" maxlength="4" style="width:60px"><button type="button" onclick="toggleEmojiPicker('edit-proj-emoji',this)" style="padding:4px 8px">😀</button></div></div>
+    <div class="form-row"><label>Description</label><textarea id="edit-proj-desc" rows="2">${escapeHtml(proj.description)}</textarea></div>
+    <div class="form-row"><label>URL</label><input type="text" id="edit-proj-url" value="${escapeHtml(proj.url)}"></div>
+    <div style="display:flex;gap:12px">
+      <div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-proj-start" value="${proj.start_date}" style="flex:1"><input type="date" id="edit-proj-start-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'edit-proj-start')"></div></div>
+      <div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-proj-end" value="${proj.end_date}" style="flex:1"><input type="date" id="edit-proj-end-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'edit-proj-end')"></div></div>
+    </div>
+    <div class="form-row"><label>Status</label><select id="edit-proj-status">
+      ${PROJECT_STATUSES.map(s => `<option value="${s}" ${proj.status===s?'selected':''}>${STATUS_LABELS[s]}</option>`).join('')}
+    </select></div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="submitEditProject('${id}')">Save</button>
+    </div>
+  `);
+}
+
+function submitEditProject(id) {
+  const name = document.getElementById('edit-proj-name').value.trim();
+  if (!name) { alert('Name is required.'); return; }
+  updateProject(id, {
+    name,
+    emoji: document.getElementById('edit-proj-emoji').value.trim() || '📁',
+    description: document.getElementById('edit-proj-desc').value.trim(),
+    url: document.getElementById('edit-proj-url').value.trim(),
+    start_date: document.getElementById('edit-proj-start').value.trim(),
+    end_date: document.getElementById('edit-proj-end').value.trim(),
+    status: document.getElementById('edit-proj-status').value
+  });
+  closeModal();
+  render();
+}
+
+// ===== PROJECT CSV IMPORT =====
+function showProjectImportModal() {
+  const csvFormat = 'name,emoji,description,url,start_date,end_date,status\nAtlas,🚀,Platform migration,https://wiki.example.com/atlas,2025/01/06,2025/03/28,in_progress\nBeacon,💡,New UI redesign,,2025/02/03,,unstarted';
+  showModal(`
+    <h2>Import Projects (CSV)</h2>
+    <p style="color:var(--fg-muted);margin-bottom:12px;font-size:.85rem">CSV format: name,emoji,description,url,start_date,end_date,status. Dates in YYYY/MM/DD. Status: unstarted, in_progress, paused, done. Existing projects are updated by name.</p>
+    <div class="form-row"><label>Expected format (copy and fill):</label>
+      <textarea id="csv-format" rows="4" readonly style="font-family:var(--font-mono);font-size:.75rem;color:var(--fg-muted)">${csvFormat}</textarea>
+    </div>
+    <div class="form-row"><label>Select CSV file</label><input type="file" id="project-csv-file" accept=".csv,.txt"></div>
+    <div class="form-row"><label>Or paste CSV content</label><textarea id="project-csv-paste" rows="6" placeholder="name,emoji,description,..."></textarea></div>
+    <div class="form-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="doProjectCSVImport()">Import</button>
+    </div>
+  `);
+}
+
+function parseCSV(text) {
+  const lines = text.trim().split('\n');
+  if (lines.length < 2) return [];
+  // Detect header
+  const header = lines[0].toLowerCase().trim();
+  const hasHeader = header.includes('name') && header.includes('status');
+  const dataLines = hasHeader ? lines.slice(1) : lines;
+  return dataLines.map(line => {
+    // Simple CSV parse (handles quoted fields)
+    const fields = [];
+    let cur = '', inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (inQ) { if (c === '"' && line[i+1] !== '"') inQ = false; else if (c === '"' && line[i+1] === '"') { cur += '"'; i++; } else cur += c; }
+      else { if (c === '"') inQ = true; else if (c === ',') { fields.push(cur); cur = ''; } else cur += c; }
+    }
+    fields.push(cur);
+    return fields;
+  }).filter(f => f.length >= 1 && f[0].trim());
+}
+
+function doProjectCSVImport() {
+  let csvText = '';
+  const file = document.getElementById('project-csv-file').files[0];
+  if (file) {
+    const reader = new FileReader();
+    reader.onload = function(e) { processProjectCSV(e.target.result); };
+    reader.readAsText(file);
+    return;
+  }
+  csvText = document.getElementById('project-csv-paste').value.trim();
+  if (!csvText) { alert('Please select a file or paste CSV content.'); return; }
+  processProjectCSV(csvText);
+}
+
+function processProjectCSV(text) {
+  const rows = parseCSV(text);
+  if (rows.length === 0) { alert('No valid rows found in CSV.'); return; }
+  pushUndo();
+  let created = 0, updated = 0;
+  rows.forEach(fields => {
+    const [name, emoji, description, url, start_date, end_date, status] = fields.map(f => (f||'').trim());
+    if (!name) return;
+    const validStatus = PROJECT_STATUSES.includes(status) ? status : 'unstarted';
+    const existing = getProjectByName(name);
+    if (existing) {
+      updateProjectNoUndo(existing.id, { emoji: emoji||existing.emoji, description, url, start_date, end_date, status: validStatus });
+      updated++;
+    } else {
+      addProjectNoUndo({ name, emoji: emoji||'📁', description, url, start_date, end_date, status: validStatus });
+      created++;
+    }
+  });
+  saveStore();
+  closeModal();
+  render();
+  alert(`Import complete: ${created} created, ${updated} updated.`);
+}
+
+function updateProjectNoUndo(id, data) {
+  const p = getProject(id);
+  if (p) Object.assign(p, data);
+}
+
+function addProjectNoUndo(data) {
+  store.projects.push({
+    id: uid(), name: data.name || 'New Project', emoji: data.emoji || '📁',
+    description: data.description || '', url: data.url || '',
+    start_date: data.start_date || '', end_date: data.end_date || '',
+    status: data.status || 'unstarted'
+  });
+}
+
 function renderSettings(container) {
   const s = store.settings;
   let html = `<h2>Settings</h2>
@@ -1657,18 +2221,16 @@ function pruneOldData() {
   saveStore();
 }
 
-// ===== DRAG SELECTION SYSTEM =====
+// ===== DRAG SELECTION SYSTEM (rectangular: horizontal + vertical) =====
 
-function startDrag(event, personId, cellsJson) {
+function startDrag(event, personId, date, slot, row, col) {
   event.preventDefault();
-  const cells = typeof cellsJson === 'string' ? JSON.parse(cellsJson) : cellsJson;
   dragState = {
-    personId,
-    startCells: cells,
-    currentCells: cells.slice(),
+    startRow: row, startCol: col,
+    startPersonId: personId, startDate: date, startSlot: slot,
+    endRow: row, endCol: col,
     isDragging: false
   };
-  // Add mouseup listener (will fire after drag or simple click)
   document.addEventListener('mouseup', endDrag);
 }
 
@@ -1676,55 +2238,62 @@ function extendDrag(event) {
   if (!dragState) return;
   const td = event.target.closest('td.half-day');
   if (!td) return;
-  const personId = td.dataset.person;
-  if (personId !== dragState.personId) return;
-  // Query all half-day tds in the same row and compute range from data-cells attributes
-  const row = td.parentElement;
-  const allTds = Array.from(row.querySelectorAll('td.half-day'));
-  const startCellsStr = JSON.stringify(dragState.startCells);
-  const startIdx = allTds.findIndex(t => t.dataset.cells === startCellsStr || JSON.stringify(JSON.parse(t.dataset.cells)) === startCellsStr);
-  const endIdx = allTds.indexOf(td);
-  if (startIdx < 0 || endIdx < 0) return;
+  const endRow = parseInt(td.dataset.row);
+  const endCol = parseInt(td.dataset.col);
+  if (isNaN(endRow) || isNaN(endCol)) return;
+  if (endRow === dragState.endRow && endCol === dragState.endCol) return; // no change
+  dragState.endRow = endRow;
+  dragState.endCol = endCol;
   dragState.isDragging = true;
-  // Collect all cells from start to end
-  const lo = Math.min(startIdx, endIdx);
-  const hi = Math.max(startIdx, endIdx);
-  let allCells = [];
-  for (let i = lo; i <= hi; i++) {
-    const dc = allTds[i].dataset.cells;
-    if (dc) allCells = allCells.concat(JSON.parse(dc));
-  }
-  dragState.currentCells = allCells;
-  // Highlight
+  // Highlight rectangular selection
+  const loRow = Math.min(dragState.startRow, endRow);
+  const hiRow = Math.max(dragState.startRow, endRow);
+  const loCol = Math.min(dragState.startCol, endCol);
+  const hiCol = Math.max(dragState.startCol, endCol);
   clearDragHighlight();
-  for (let i = lo; i <= hi; i++) allTds[i].classList.add('in-range');
-  allTds[lo].classList.add('selected');
-  allTds[hi].classList.add('selected');
+  document.querySelectorAll('td.half-day').forEach(td2 => {
+    const r = parseInt(td2.dataset.row);
+    const c = parseInt(td2.dataset.col);
+    if (!isNaN(r) && !isNaN(c) && r >= loRow && r <= hiRow && c >= loCol && c <= hiCol) {
+      td2.classList.add('in-range');
+    }
+  });
 }
 
 function clearDragHighlight() {
-  document.querySelectorAll('.half-day.selected, .half-day.in-range').forEach(td => {
-    td.classList.remove('selected');
-    td.classList.remove('in-range');
-  });
+  document.querySelectorAll('.half-day.in-range').forEach(td => td.classList.remove('in-range'));
 }
 
 function endDrag(event) {
   document.removeEventListener('mouseup', endDrag);
   if (!dragState) return;
-  const cells = dragState.currentCells;
   const wasDrag = dragState.isDragging;
-  const personId = dragState.personId;
+  const loRow = Math.min(dragState.startRow, dragState.endRow);
+  const hiRow = Math.max(dragState.startRow, dragState.endRow);
+  const loCol = Math.min(dragState.startCol, dragState.endCol);
+  const hiCol = Math.max(dragState.startCol, dragState.endCol);
   clearDragHighlight();
   dragState = null;
-  if (cells.length <= 1 || !wasDrag) {
+  if (!wasDrag) {
     // Single click — open single cell editor
-    const c = cells[0];
-    openCellEditor(personId, c.date, c.slot);
+    openCellEditorFromGrid(loRow, loCol);
   } else {
-    // Range — open range editor
-    openRangeEditor(personId, cells);
+    // Collect all selected cells
+    const selectedCells = [];
+    document.querySelectorAll('td.half-day').forEach(td => {
+      const r = parseInt(td.dataset.row);
+      const c = parseInt(td.dataset.col);
+      if (!isNaN(r) && !isNaN(c) && r >= loRow && r <= hiRow && c >= loCol && c <= hiCol) {
+        selectedCells.push({ personId: td.dataset.person, date: td.dataset.date, slot: td.dataset.slot });
+      }
+    });
+    openRangeEditor(selectedCells);
   }
+}
+
+function openCellEditorFromGrid(row, col) {
+  const td = document.querySelector(`td.half-day[data-row="${row}"][data-col="${col}"]`);
+  if (td) openCellEditor(td.dataset.person, td.dataset.date, td.dataset.slot);
 }
 
 // Global mousemove for drag extension
@@ -1733,20 +2302,43 @@ document.addEventListener('mousemove', extendDrag);
 // ===== RANGE EDITOR =====
 let rangeEditorCells = null;
 
-function openRangeEditor(personId, cells) {
+function openRangeEditor(cells) {
   rangeEditorCells = cells;
-  rangeEditorCells._personId = personId;
+  rangeProjCount = 1;
+  const personIds = [...new Set(cells.map(c => c.personId))];
+  rangeEditorPersonIds = personIds;
+  const peopleNames = personIds.map(id => { const p = getPerson(id); return p ? p.name : id; });
   const first = cells[0];
   const last = cells[cells.length - 1];
-  const p = getPerson(personId);
-  const name = p ? p.name : personId;
+  const nameText = peopleNames.length === 1 ? peopleNames[0] : `${peopleNames.length} people (${peopleNames.slice(0,3).join(', ')}${peopleNames.length > 3 ? '...' : ''})`;
   
-  let html = `<h2>Edit Range — ${name}</h2>
-    <p style="color:var(--fg-muted);margin-bottom:12px">${cells.length} half-day slots: ${first.date} ${first.slot.toUpperCase()} → ${last.date} ${last.slot.toUpperCase()}</p>
-    <div class="form-row"><label>Project name</label><input type="text" id="range-project" placeholder="e.g. Atlas"></div>
-    <div class="form-row"><label>
-      <input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty
-    </label></div>
+  let html = `<h2>Edit Range — ${escapeHtml(nameText)}</h2>
+    <div style="display:flex;gap:12px;margin-bottom:12px">
+      <div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center">
+        <input type="text" id="range-start-date" value="${first.date}" style="flex:1">
+        <input type="date" id="range-start-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'range-start-date')">
+        <select id="range-start-slot" style="width:60px"><option value="am" ${first.slot==='am'?'selected':''}>AM</option><option value="pm" ${first.slot==='pm'?'selected':''}>PM</option></select>
+      </div></div>
+      <div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center">
+        <input type="text" id="range-end-date" value="${last.date}" style="flex:1">
+        <input type="date" id="range-end-picker" style="width:36px" title="Date picker" onchange="datePickerToText(this,'range-end-date')">
+        <select id="range-end-slot" style="width:60px"><option value="am" ${last.slot==='am'?'selected':''}>AM</option><option value="pm" ${last.slot==='pm'?'selected':''}>PM</option></select>
+      </div></div>
+    </div>
+    <div id="range-project-list">
+      <div class="project-row">
+        <input type="text" id="range-proj-0" placeholder="Project name" list="project-names">
+        <input type="number" min="0" max="100" value="100" id="range-pct-0" style="width:60px" onchange="updateRangePctTotal()">
+        <span>%</span>
+      </div>
+    </div>
+    <button onclick="addRangeProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
+    <div class="pct-total" id="range-pct-total">Total: 100%</div>
+    <div style="margin-top:8px">
+      <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
+        <input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty
+      </label>
+    </div>
     <div style="margin:12px 0;border-top:1px solid var(--border)"></div>
     <div class="form-row"><label>Or set Away type:</label>
       <select id="range-away-type">
@@ -1767,23 +2359,105 @@ function openRangeEditor(personId, cells) {
       <button onclick="applyRangeClear()">Clear All</button>
       <button class="primary" onclick="applyRangeEditor()">Apply to All</button>
     </div>`;
+  html += projectNamesDatalist();
   showModal(html);
+}
+
+let rangeProjCount = 1;
+let rangeEditorPersonIds = [];
+
+// Generate all {date, slot} pairs from start to end chronologically
+function generateSlotsInRange(startDate, startSlot, endDate, endSlot) {
+  const result = [];
+  const start = parseDate(startDate);
+  const end = parseDate(endDate);
+  if (!start || !end) return result;
+  let curDate = new Date(start);
+  let curSlot = startSlot;
+  while (curDate < end || (curDate.getTime() === end.getTime() && curSlot <= endSlot)) {
+    result.push({ date: fmtDate(curDate), slot: curSlot });
+    if (curSlot === 'am') { curSlot = 'pm'; } else { curSlot = 'am'; curDate = new Date(curDate); curDate.setDate(curDate.getDate() + 1); }
+  }
+  return result;
+}
+
+// Recompute cells from edited dates and stored person IDs
+function getRangeEditorCells() {
+  const startDate = document.getElementById('range-start-date').value.trim();
+  const startSlot = document.getElementById('range-start-slot').value;
+  const endDate = document.getElementById('range-end-date').value.trim();
+  const endSlot = document.getElementById('range-end-slot').value;
+  const slots = generateSlotsInRange(startDate, startSlot, endDate, endSlot);
+  const cells = [];
+  rangeEditorPersonIds.forEach(pid => {
+    slots.forEach(sl => cells.push({ personId: pid, date: sl.date, slot: sl.slot }));
+  });
+  return cells;
+}
+
+function addRangeProject() {
+  const list = document.getElementById('range-project-list');
+  const idx = rangeProjCount++;
+  const div = document.createElement('div');
+  div.className = 'project-row';
+  div.innerHTML = `<input type="text" id="range-proj-${idx}" placeholder="Project name" list="project-names">
+    <input type="number" min="0" max="100" value="50" id="range-pct-${idx}" style="width:60px" onchange="updateRangePctTotal()">
+    <span>%</span>
+    <button onclick="removeRangeProject(this.parentElement)" style="padding:2px 6px;font-size:.75rem">✕</button>`;
+  list.appendChild(div);
+  updateRangePctTotal();
+}
+
+function removeRangeProject(row) {
+  const list = document.getElementById('range-project-list');
+  if (list.children.length <= 1) return;
+  row.remove();
+  updateRangePctTotal();
+}
+
+function updateRangePctTotal() {
+  const list = document.getElementById('range-project-list');
+  if (!list) return;
+  let total = 0;
+  Array.from(list.children).forEach(row => {
+    const pctInput = row.querySelector('input[type="number"]');
+    if (pctInput) total += +pctInput.value || 0;
+  });
+  const el = document.getElementById('range-pct-total');
+  if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); }
 }
 
 function applyRangeEditor() {
   if (!rangeEditorCells) return;
-  const projName = document.getElementById('range-project').value.trim();
-  const run = document.getElementById('range-run').checked;
   const awayType = document.getElementById('range-away-type').value;
+  const run = document.getElementById('range-run').checked;
   
+  // Collect projects from the list
+  const projects = [];
+  let total = 0;
+  const list = document.getElementById('range-project-list');
+  Array.from(list.children).forEach(row => {
+    const nameInput = row.querySelector('input[type="text"]');
+    const pctInput = row.querySelector('input[type="number"]');
+    const name = nameInput ? nameInput.value.trim() : '';
+    const pct = pctInput ? (+pctInput.value || 0) : 0;
+    if (name) { projects.push({ name, pct }); total += pct; }
+  });
+  
+  if (total > 100) {
+    alert('Total project percentage cannot exceed 100%. Current total: ' + total + '%');
+    return;
+  }
+  
+  const cells = getRangeEditorCells();
   pushUndo();
-  rangeEditorCells.forEach(c => {
+  cells.forEach(c => {
     if (awayType) {
-      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: { type: awayType, note: '' }, projects: [], run: false });
-    } else if (projName) {
-      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: null, projects: [{ name: projName, pct: 100 }], run });
+      setSlotNoUndo(c.personId, c.date, c.slot, { state: 'filled', away: { type: awayType, note: '' }, projects: [], run: false });
+    } else if (projects.length > 0) {
+      setSlotNoUndo(c.personId, c.date, c.slot, { state: 'filled', away: null, projects, run });
     } else if (run) {
-      setSlotNoUndo(c.personId || getCellPersonId(c), c.date, c.slot, { state: 'filled', away: null, projects: [], run: true });
+      setSlotNoUndo(c.personId, c.date, c.slot, { state: 'filled', away: null, projects: [], run: true });
     }
   });
   saveStore();
@@ -1794,9 +2468,10 @@ function applyRangeEditor() {
 
 function applyRangeUndetermined() {
   if (!rangeEditorCells) return;
+  const cells = getRangeEditorCells();
   pushUndo();
-  rangeEditorCells.forEach(c => {
-    setSlotNoUndo(getCellPersonId(c), c.date, c.slot, { state: 'undetermined', away: null, projects: [], run: false });
+  cells.forEach(c => {
+    setSlotNoUndo(c.personId, c.date, c.slot, { state: 'undetermined', away: null, projects: [], run: false });
   });
   saveStore();
   rangeEditorCells = null;
@@ -1806,9 +2481,10 @@ function applyRangeUndetermined() {
 
 function applyRangeClear() {
   if (!rangeEditorCells) return;
+  const cells = getRangeEditorCells();
   pushUndo();
-  rangeEditorCells.forEach(c => {
-    setSlotNoUndo(getCellPersonId(c), c.date, c.slot, null);
+  cells.forEach(c => {
+    setSlotNoUndo(c.personId, c.date, c.slot, null);
   });
   saveStore();
   rangeEditorCells = null;
@@ -1817,7 +2493,7 @@ function applyRangeClear() {
 }
 
 function getCellPersonId(cell) {
-  return cell.personId || (rangeEditorCells && rangeEditorCells._personId) || null;
+  return cell.personId;
 }
 
 function setSlotNoUndo(personId, date, slot, data) {
@@ -1863,14 +2539,14 @@ function openCellEditor(personId, date, slot) {
     <div id="project-list">`;
   projects.forEach((proj, i) => {
     html += `<div class="project-row">
-      <input type="text" value="${proj.name}" placeholder="Project name" data-idx="${i}" onchange="updateProjectName(${i},this.value)">
+      <input type="text" value="${proj.name}" placeholder="Project name" list="project-names" data-idx="${i}" onchange="updateProjectName(${i},this.value)">
       <input type="number" min="0" max="100" value="${proj.pct}" data-idx="${i}" onchange="updateProjectPct(${i},+this.value)">
       <span>%</span>
       ${projects.length > 1 ? `<button onclick="removeProject(${i})">✕</button>` : ''}
     </div>`;
   });
   html += `</div>
-    <button onclick="addProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
+    <button onclick="addEditorProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
     <div class="pct-total" id="pct-total">Total: ${sum(projects.map(p=>p.pct))}%</div>
     <div style="margin-top:8px">
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
@@ -1891,14 +2567,14 @@ function openCellEditor(personId, date, slot) {
   });
   html += `</select></div>
     <div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div>
-    <button onclick="applyAway()" class="primary">Apply Away</button>
   </div>`;
   
   html += `<div class="form-actions">
     <button onclick="closeCellEditor()">Cancel</button>
-    <button onclick="applyProjectEditor()" class="primary">Save</button>
+    <button onclick="saveCellEditor()" class="primary">Save</button>
   </div>`;
   
+  html += projectNamesDatalist();
   editor.innerHTML = html;
   editor.classList.remove('hidden');
   
@@ -1922,12 +2598,12 @@ function switchEditorTab(tab) {
   if (tabContent) tabContent.classList.remove('hidden');
 }
 
-function addProject() {
+function addEditorProject() {
   const list = document.getElementById('project-list');
   const idx = list.children.length;
   const div = document.createElement('div');
   div.className = 'project-row';
-  div.innerHTML = `<input type="text" value="" placeholder="Project name" data-idx="${idx}" onchange="updateProjectName(${idx},this.value)">
+  div.innerHTML = `<input type="text" value="" placeholder="Project name" list="project-names" data-idx="${idx}" onchange="updateProjectName(${idx},this.value)">
     <input type="number" min="0" max="100" value="50" data-idx="${idx}" onchange="updateProjectPct(${idx},+this.value)">
     <span>%</span>
     <button onclick="removeProject(${idx})">✕</button>`;
@@ -1965,6 +2641,22 @@ function updatePctTotal() {
   const el = document.getElementById('pct-total');
   el.textContent = `Total: ${total}%`;
   el.classList.toggle('over', total > 100);
+}
+
+function saveCellEditor() {
+  // Check which tab is active
+  const awayTab = document.getElementById('editor-tab-away');
+  if (awayTab && !awayTab.classList.contains('hidden')) {
+    // Away tab is active — save away type
+    const type = document.getElementById('away-type').value;
+    const note = document.getElementById('away-note').value;
+    setSlot(editorPersonId, editorDate, editorSlot, { state: 'filled', away: { type, note }, projects: [], run: false });
+    closeCellEditor();
+    render();
+  } else {
+    // Project tab is active
+    applyProjectEditor();
+  }
 }
 
 function applyAway() {
@@ -2264,6 +2956,33 @@ function importPlanning(text, mode) {
     });
   }
   
+  // Import projects
+  if (data.projects && Array.isArray(data.projects)) {
+    data.projects.forEach(p => {
+      const existing = getProjectByName(p.name || '');
+      if (existing) {
+        updateProjectNoUndo(existing.id, {
+          emoji: p.emoji || existing.emoji,
+          description: p.description || existing.description,
+          url: p.url || existing.url,
+          start_date: p.start_date || existing.start_date,
+          end_date: p.end_date || existing.end_date,
+          status: p.status || existing.status
+        });
+      } else {
+        addProjectNoUndo({
+          name: p.name || 'Unknown',
+          emoji: p.emoji || '📁',
+          description: p.description || '',
+          url: p.url || '',
+          start_date: p.start_date || '',
+          end_date: p.end_date || '',
+          status: p.status || 'unstarted'
+        });
+      }
+    });
+  }
+  
   saveStore();
 }
 
@@ -2338,6 +3057,20 @@ function doExport() {
     toml += `guest = ${p.guest ? 'true' : 'false'}\n\n`;
   });
   
+  // On-call
+  const onCallKeys = Object.keys(store.oncall || {}).sort();
+  onCallKeys.forEach(key => {
+    const parts = key.split('|');
+    if (parts.length >= 2) {
+      toml += `[[oncall]]\nperson_id = "${parts[0]}"\nweek_start = "${parts[1]}"\n\n`;
+    }
+  });
+  
+  // Projects
+  store.projects.forEach(proj => {
+    toml += `[[projects]]\nname = "${proj.name.replace(/"/g,'\\"')}"\nemoji = "${proj.emoji}"\ndescription = "${(proj.description||'').replace(/"/g,'\\"')}"\nurl = "${(proj.url||'').replace(/"/g,'\\"')}"\nstart_date = "${proj.start_date||''}"\nend_date = "${proj.end_date||''}"\nstatus = "${proj.status}"\n\n`;
+  });
+  
   // Planning
   const planningKeys = Object.keys(store.planning).sort();
   planningKeys.forEach(key => {
@@ -2409,7 +3142,7 @@ function copyLastWeek(personId) {
   let copied = 0;
   
   currentDays.forEach((d, di) => {
-    if (di >= 5) return; // skip weekends
+    if (di >= 5 && !showWeekend) return; // skip weekends
     const currentDate = fmtDate(d);
     const prevDate = fmtDate(prevDays[di]);
     

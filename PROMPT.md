@@ -30,10 +30,10 @@ Each team member has:
 - **name** — display name.
 - **role/title** — free-text (e.g. "Backend Dev", "QA Engineer").
 - **team/sub-team** — optional grouping (e.g. "Platform", "Frontend").
-- **avatar** — emoji or single character + an assigned color (auto-generated, overridable).
+- **avatar** — emoji or single character + an assigned color (auto-generated, overridable). An **emoji picker** popup (~80 curated emojis) is available in the add/edit person modals for quick selection; free-text input is also supported.
 - **start date** — when the person joined (for historical context).
 - **default project list** — projects this person typically works on (used as suggestions during entry).
-- **run ratio target** — default percentage of working time expected on run duty (e.g. 20%). See §7.
+- **run target (persons)** — removed per-person run ratio target. Run coverage is now a global headcount target (see §7).
 - **status** — one of: `active`, `archived`.
 - **archived date** — set when status becomes `archived`.
 - **guest** — boolean (default `false`). `true` marks the person as a guest.
@@ -168,27 +168,28 @@ Data representation (per half-day slot):
 
 ### 7.1 Two Supported Modes
 
-The app supports **both** run modes (the manager chooses per person or globally):
+The app supports **both** run modes (the manager chooses globally via settings):
 
-1. **Ratio mode** — each person has a **run ratio target** (default e.g. 20% of working time). The app computes actual run ratio per week and compares to the target.
+1. **Ratio mode** — run duty is distributed across the team. A global **run target** (headcount, default 3 persons) defines how many people should be on run during any given half-day. The app counts actual people on run per half-day and compares to the target.
 2. **Rotation mode** — a **dedicated run person** is assigned per week (or per configurable period), at 100% run; the manager rotates people through.
 
-### 7.2 Ratio Mode Calculations
+### 7.2 Ratio Mode Calculations (Headcount Model)
 
-For each person, each week:
+Run coverage is measured **per half-day slot**, not as a percentage:
 
-- **working half-days** = total half-days in the week − away half-days.
-- **run half-days** = count of half-day slots where `run = true`.
-- **actual run ratio** = `run_half_days / working_half_days`.
-- Compare to the person's **run ratio target** → show **over/under** indicator.
+For each half-day (e.g. "Wednesday AM"):
+- **Actual on run** = count of active team members with `run = true` on that slot.
+- **Target** = `run_target_persons` (global setting, default 3).
+- If actual < target → **visual warning** (red cell, warning banner).
 
 Team-level, each week:
+- A **coverage table** shows days (Mon–Fri) × slots (AM/PM), each cell showing `actual/target` (e.g. `2/3`).
+- Cells below target are highlighted red; cells at or above are green.
+- A **warning banner** appears if any slot in the week is below target.
+- Lists who is on run each week (by name and half-day count).
 
-- **Σ run half-days** across all active team members.
-- **Σ working half-days** across all active team members.
-- **team run ratio** = `Σ run_half_days / Σ working_half_days`.
-- **average collaborators on run** = `Σ run_half_days / half_days_per_week` (e.g. if total run = 8 half-days in a 5-day week → 0.8 FTE on run).
-- **Forecast**: next week's projected run coverage vs. needed, flagging **understaffed/overstaffed** on run (e.g. "next week: understaffed on run by 0.5 FTE").
+Per-person view:
+- Shows run half-days count vs working half-days (e.g. "Run 4/10 half-days").
 
 ### 7.3 Rotation Mode
 
@@ -199,8 +200,9 @@ Team-level, each week:
 
 ### 7.4 Visual Cues
 
-- Person's week cell is colored **green** (at target), **amber** (slightly off), or **red** (significantly off) based on actual vs. target run ratio.
-- Team summary shows the weekly run coverage and forecast.
+- Run coverage table: cells show `actual/target`, red when below target, green when met.
+- Warning banner per week if any slot is below target.
+- Team grid summary row shows `runCount/target` per day, red when below target.
 
 ---
 
@@ -212,6 +214,7 @@ Team-level, each week:
   - Choose away type (fills slot) **or**
   - Add projects with percentages (validated ≤100%) + toggle run on/off **or**
   - Mark as "undetermined".
+- **Drag selection**: click and drag across multiple consecutive half-day cells for the same person → opens a **range editor** that applies the same assignment (project, away type, run, undetermined, or clear) to all selected slots at once.
 - Keyboard-friendly: tab between cells, quick shortcuts (see §13).
 - **"Copy last week"** helper: duplicate a person's previous week of assignments into the current week (manager confirms; away entries are not copied by default, configurable).
 
@@ -220,6 +223,9 @@ Team-level, each week:
 - Manager can import a TOML file to load/replace planning data.
 - Import can **merge** or **replace** (manager chooses; replace requires confirm).
 - TOML schema mirrors the internal data model (see §12).
+- The TOML parser handles **multi-line arrays** (e.g. `projects = [\n  { name = "...", pct = 100 },\n]`) and **inline tables** with comma-separated key-value pairs.
+- Comment stripping (`#`) respects quoted strings — a `#` inside a quoted string (e.g. hex color `"#e07b00"`) is not treated as a comment.
+- Import **preserves original person IDs** from the TOML file (does not regenerate them).
 
 ### 8.3 Public Holiday Import
 
@@ -237,6 +243,8 @@ Team-level, each week:
   - Run → event titled `Run duty` (or a `Run` tag on a project event if shared).
   - Undetermined → event titled `Project: undetermined`.
 - Events include a category/color mapping so calendar apps show them distinctly.
+- ICS events include a `DTSTAMP` property (RFC 5545 required).
+- Special characters (commas, semicolons, newlines, backslashes) in SUMMARY, DESCRIPTION, and CATEGORIES are escaped per RFC 5545.
 - **Hover text** on the person's name / export button indicates the **period covered** (e.g. "2025-01-06 → 2025-02-02, 4 weeks").
 
 ---
@@ -247,26 +255,36 @@ V1 ships with multiple visualization formats. The manager will iterate over time
 
 ### 10.1 Team Grid (Default)
 
-- Rows: people (active team members). Columns: weeks (rolling N). Each cell: a week compactly showing half-day colors per day.
-- Color legend: away types (distinct colors), project (blue family), run (orange/red), undetermined (grey hatch), not-filled (dashed).
-- Click a cell to edit; click a person name to open individual view / export ICS.
-- Summary row at bottom: team run coverage, away count, available count per week.
+- Rows: people (active team members). Columns: weeks (rolling N). Each cell: a half-day slot.
+- **Cell merging**: consecutive same-type slots for the same person are visually merged via colspan (e.g. 4 half-days of the same project appear as one wide cell). Multi-project or complex slots are not merged.
+- **Project name labels**: project names (or away-type abbreviations) are shown in very small text (7px) within each cell.
+- **Project color hashing**: same project name → same color across all people (hash-based HSL color). Away types and run use fixed colors.
+- **Week separators**: a 3px accent-colored left border marks the first cell of each week for quick visual grouping.
+- **Group by toggle**: a button bar lets the manager switch between **Name** (alphabetical, default) and **Sub-team** (grouped by sub-team field with highlighted header rows; people with no sub-team go into an "Other" group).
+- Color legend: away types (distinct colors), project (hash-based per project), run (orange/red), undetermined (grey hatch), not-filled (dashed).
+- Click a cell to edit; drag across cells for range editing; click a person name to open individual view / export ICS.
+- Summary row at bottom: availability % and `runCount/target` per day (red when below run target).
 
 ### 10.2 Individual View
 
-- Single person, expanded: full half-day grid for the visible window, all details visible, run ratio per week, project breakdown.
+- Single person, expanded: full half-day grid for the visible window, all details visible, run half-day count per week, project breakdown.
 - ICS export button here too.
 - Printable layout available (see §11).
 
 ### 10.3 Run Coverage View
 
-- Per week: how many FTE on run, vs. needed (sum of targets), forecast for next weeks.
-- Color-coded bar/gauge per week.
-- Lists who is on run each week.
+- Per week: a **coverage table** showing days (Mon–Fri) × slots (AM/PM), each cell showing `actual/target` (e.g. `2/3`).
+- Cells below target are red; cells at or above are green.
+- Warning banner per week if any slot is below target.
+- Lists who is on run each week (by name and half-day count).
+- Supports both ratio mode and rotation mode (toggle in the view).
+- In rotation mode: button to assign run person(s) for each week.
 
 ### 10.4 Guests View
 
-- Separate page listing guest people with their planning (same grid format as team grid but separate).
+- Separate page listing guest people with their planning.
+- Uses the same colspan-based merged cell rendering as the team grid (with project colors, labels, week separators).
+- Has its own scroll navigation (Earlier / Later / Today).
 - Guests excluded from all team aggregates.
 
 ### 10.5 Archived View
@@ -275,9 +293,13 @@ V1 ships with multiple visualization formats. The manager will iterate over time
 - Restore button per person.
 - Historical planning viewable if scrolling to their active period.
 
-### 10.6 Availability Summary ("Where is everyone today/this week")
+### 10.6 Availability Summary ("Where is everyone")
 
-- Quick summary: who's available, who's away (and type), who's on run, who's on projects — for the current day or selected week.
+- Quick summary: who's available, who's away (and type), who's on run, who's on projects.
+- **Week navigation**: Earlier / Today / Later buttons to browse any week (not just the current one).
+- Per-person cards show a mini week summary with colored dots for each half-day.
+- Current slot is highlighted when viewing the current week.
+- Week overview grid at the bottom shows away/run/project/unassigned counts per day for the selected week.
 - Designed for at-a-glance scanning.
 
 ### 10.7 Future Views (Placeholder)
@@ -318,7 +340,7 @@ window_weeks = 4
 prune_weeks = 12
 week_starts = "monday"
 run_mode = "ratio"   # or "rotation"
-default_run_ratio_target = 20
+run_target_persons = 3   # headcount target per half-day
 
 [[people]]
 id = "uuid-or-slug"
@@ -328,7 +350,6 @@ sub_team = "Platform"
 avatar = { emoji = "🦊", color = "#e07b00" }
 start_date = "2023-03-01"
 default_projects = ["Atlas", "Beacon"]
-run_ratio_target = 20
 status = "active"
 guest = false
 archived_date = ""
@@ -412,11 +433,12 @@ JSON export uses the same pattern with `.json` extension.
 - Tab / Shift+Tab — move between half-day cells.
 - Enter — open cell editor.
 - Escape — close editor / cancel.
-- `u` — mark selected cell as "undetermined".
-- `r` — toggle run on selected cell.
+- `u` — mark selected cell as "undetermined" (disabled when focus is in a text input).
+- `r` — toggle run on selected cell (disabled when focus is in a text input).
 - `Delete` / `Backspace` — clear selected cell (back to "not filled").
 - `Ctrl+Z` — undo.
 - `Ctrl+E` — export current view to TOML.
+- Single-key shortcuts (`u`, `r`) are **disabled when the focused element is an input, select, or textarea** to prevent conflicts with typing.
 - Implementer may add more; shortcuts documented in an in-app help panel.
 
 ### 13.3 Search & Filter
@@ -468,7 +490,7 @@ First load (no data detected):
 | `prune_weeks`             | 12            | Threshold for the "Prune now" button.                |
 | `week_starts`             | `monday`      | First day of the week.                               |
 | `run_mode`                | `ratio`       | `ratio` or `rotation`.                               |
-| `default_run_ratio_target`| 20            | Default run ratio target for new people (%).        |
+| `run_target_persons`      | 3             | Run target: how many people should be on run per half-day. |
 | `theme`                   | `dracula`     | Active theme.                                        |
 | `export_counter`          | 1             | Monotonic counter for export filenames.              |
 
@@ -526,25 +548,46 @@ dist/
 ## 17. Acceptance Criteria (V1)
 
 1. Single `index.html` opens in a browser with no network and displays the onboarding/empty state.
-2. Manager can add people (team members and guests), set all person fields, archive and restore them.
+2. Manager can add people (team members and guests), set all person fields (with emoji picker), archive and restore them.
 3. Manager can fill half-day slots with away / projects (≤100% validated) / run / undetermined, and clear them.
 4. "Not filled" vs "undetermined" are visually distinct.
 5. Rolling N-week window scrolls forward (and backward as nice-to-have); position persists.
-6. Run ratio (ratio mode) and run rotation (rotation mode) both work; team run coverage + forecast display.
+6. Run coverage (ratio mode) shows per-half-day headcount vs target (default 3); run rotation mode works; warning banners when below target.
 7. All listed views render: team grid, individual, run coverage, guests, archived, availability summary.
-8. TOML import (merge/replace) and export (correct filename pattern) work round-trip without data loss.
+8. TOML import (merge/replace) and export (correct filename pattern) work round-trip without data loss. Multi-line arrays, inline tables, and comment-in-string handling all work. Person IDs preserved on import.
 9. Public holiday TOML import + auto-fill works.
-10. ICS export per person covers the visible window; hover shows the covered period.
+10. ICS export per person covers the visible window; hover shows the covered period; DTSTAMP and escaping correct.
 11. Print layouts (whole-team + single-individual) produce clean PDFs via browser.
 12. Theme selector (Dracula, Monokai, light) works; preference persists.
 13. Sample data loads and showcases all states/categories/views.
 14. Single-level undo works.
 15. Prune-now deletes data older than X weeks (confirm dialog).
 16. Schema versioning: old-format data migrates silently; incompatible data warns.
+17. Drag selection across multiple half-day cells opens a range editor that applies changes to all selected slots.
+18. Cell merging: consecutive same-type slots are visually merged via colspan; project names shown in small text.
+19. Project color hashing: same project name → same color across people.
+20. Week separators: 3px accent left border marks week boundaries.
+21. Team grid grouping: toggle between Name (alphabetical) and Sub-team (with header rows).
+22. Availability view has week navigation (Earlier / Today / Later).
+23. Emoji picker popup in add/edit person modals.
+24. Single-key keyboard shortcuts disabled when typing in input fields.
 
 ---
 
-## 18. Open Questions for Implementation
+## 18. Implementation Notes
+
+The app was implemented as a single vanilla JavaScript `index.html` file (~100KB, ~2400 lines). Key implementation decisions:
+
+- **Vanilla JS** (no framework, no build step) — chosen for simplicity; the file is directly editable.
+- **localStorage** for persistence (sufficient for ~20 people × 52 weeks).
+- **TOML parser** is hand-rolled (no library) with support for multi-line arrays, inline tables, and string-aware comment stripping.
+- **ICS generator** is hand-rolled with proper DTSTAMP and character escaping.
+- **Project colors** use a hash-based HSL color generator (`projectColor()`).
+- **Cell merging** uses colspan on consecutive same-type half-day slots; merge groups break at week boundaries.
+- **Drag selection** uses mousedown/mousemove/mouseup with `data-cells` attributes (single-quoted to safely contain JSON with double quotes).
+- **Run target** is a global headcount setting (`run_target_persons`, default 3), not a per-person percentage.
+
+## 19. Open Questions for Implementation
 
 These are left to the implementer's judgment within the constraints above:
 
