@@ -1,0 +1,17 @@
+version: "3.8"
+
+services:
+  teamviz:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      TVZ_JWT_SECRET: ${TVZ_JWT_SECRET:-dev-secret-change-me}
+      TVZ_DB_PATH: /data/teamviz.db
+      TVZ_LISTEN: ":8080"
+    volumes:
+      - teamviz-data:/data
+    restart: unless-stopped
+
+volumes:
+  teamviz-data:

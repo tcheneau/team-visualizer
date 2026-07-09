@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Team Activity Visualizer</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<div id="app">
+  <div id="topbar" class="hidden">
+    <span class="logo">📊 Team Visualizer</span>
+    <button class="nav-btn active" data-view="team">Team Grid</button>
+    <button class="nav-btn" data-view="availability">Availability</button>
+    <button class="nav-btn" data-view="run">Run Coverage</button>
+    <button class="nav-btn" data-view="guests">Guests</button>
+    <button class="nav-btn" data-view="archived">Archived</button>
+    <button class="nav-btn" data-view="people">People</button>
+    <button class="nav-btn" data-view="projects">Projects</button>
+    <button class="nav-btn" data-view="settings">Settings</button>
+    <span class="spacer"></span>
+    <span class="topbar-right">
+      <span id="ws-status" title="WebSocket connection" style="font-size:.8rem;cursor:default">●</span>
+      <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
+      <button id="btn-export" title="Export TOML">⬇ Export</button>
+      <button id="btn-import" title="Import TOML">⬆ Import</button>
+      <button id="btn-help" title="Help">❓</button>
+      <span id="user-info" style="font-size:.8rem;color:var(--fg-muted);margin-left:8px"></span>
+    </span>
+  </div>
+  <div id="main">
+    <div id="loading" style="text-align:center;padding:60px;color:var(--fg-muted)">
+      <div style="font-size:2rem;margin-bottom:12px">📊</div>
+      <div>Loading Team Visualizer…</div>
+    </div>
+  </div>
+  <div id="statusbar">
+    <span id="status-left"></span>
+    <span id="status-right"></span>
+  </div>
+</div>
+<div id="overlay" class="overlay hidden"><div id="modal-content" class="modal"></div></div>
+<div id="cell-editor" class="cell-editor hidden"></div>
+<div id="toast-container" style="position:fixed;bottom:20px;right:20px;z-index:400;display:flex;flex-direction:column;gap:8px;pointer-events:none"></div>
+<script src="/app.js"></script>
+</body>
+</html>

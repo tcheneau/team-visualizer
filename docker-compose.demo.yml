@@ -1,0 +1,117 @@
+# ============================================================
+# Team Visualizer — Demo with Keycloak + oauth2-proxy
+# ============================================================
+# Brings up:
+#   1. Keycloak (OIDC auth server, pre-provisioned with 3 users + client)
+#   2. oauth2-proxy (handles OAuth flow, sets X-Forwarded-User/Groups)
+#   3. Team Visualizer (Go app, trusts proxy headers)
+#
+# Users (password = username):
+#   admin  → tvz-admin group    → app admin role
+#   user   → tvz-normal group   → app normal role
+#   rouser → tvz-readonly group → app read-only role
+#
+# Usage:
+#   docker-compose -f docker-compose.demo.yml up -d
+#   open http://localhost:8080
+#
+# First launch takes ~40s for Keycloak + provisioning.
+# Keycloak admin console: http://localhost:8090 (admin/admin)
+# ============================================================
+
+services:
+  # ---------- Keycloak (OIDC provider) ----------
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+      KC_DB: dev-file
+      KC_HOSTNAME: localhost
+      KC_HTTP_ENABLED: "true"
+      KC_PROXY: edge
+    ports:
+      - "8090:8080"
+    command: ["start-dev"]
+    volumes:
+      - keycloak-data:/opt/keycloak/data
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  # ---------- Keycloak Provisioner (one-shot) ----------
+  keycloak-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.keycloak-init
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    entrypoint: ["/bin/bash", "/scripts/init-keycloak.sh"]
+    volumes:
+      - ./scripts/init-keycloak.sh:/scripts/init-keycloak.sh:ro
+    restart: "no"
+
+  # ---------- oauth2-proxy (OIDC reverse proxy) ----------
+  oauth2-proxy:
+    image: quay.io/oauth2-proxy/oauth2-proxy:v7.6.0
+    depends_on:
+      keycloak:
+        condition: service_healthy
+      keycloak-init:
+        condition: service_completed_successfully
+      teamviz:
+        condition: service_started
+    ports:
+      - "8080:4180"
+    # for the cookie-secret: python -c 'import os,base64; print(base64.urlsafe_b64encode(os.urandom(32)).decode())'
+    command:
+      - --provider=keycloak-oidc
+      - --client-id=teamviz-demo
+      - --client-secret=demo-secret-not-for-production-use
+      - --oidc-issuer-url=http://keycloak:8080/realms/teamviz
+#      - --login-url=http://localhost:8090/realms/teamviz/protocol/openid-connect/auth
+#      - --redeem-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/token
+#      - --validate-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/userinfo
+      - --upstream=http://teamviz:8080/
+      - --http-address=0.0.0.0:4180
+      - --redirect-url=http://localhost:8080/oauth2/callback
+      - --set-authorization-header=false
+      - --pass-authorization-header=false
+      - --set-xauthrequest=true
+      - --pass-basic-auth=false
+      - --cookie-secret=bANfjTV8ezWOpX9fFDQ0AM45VYXQH9i5sAgnmDvl4z0=
+      - --pass-user-headers=true
+      - --allowed-group=tvz-admin,tvz-normal,tvz-readonly
+      - --email-domain=*
+      - --show-debug-on-error=true
+      - --insecure-oidc-allow-unverified-email=true
+      - --cookie-secure=false
+      - --cookie-samesite=lax
+      - --whitelist-domain=localhost
+    restart: unless-stopped
+
+  # ---------- Team Visualizer (Go app) ----------
+  teamviz:
+    build: .
+    environment:
+      TVZ_JWT_SECRET: demo-jwt-secret-not-for-production
+      TVZ_DB_PATH: /data/teamviz.db
+      TVZ_LISTEN: ":8080"
+      TVZ_PROXY_HEADER_USER: "X-Forwarded-User"
+      TVZ_PROXY_HEADER_GROUPS: "X-Forwarded-Groups"
+      TVZ_ADMIN_GROUP: "tvz-admin"
+      TVZ_NORMAL_GROUP: "tvz-normal"
+      TVZ_READONLY_GROUP: "tvz-readonly"
+    volumes:
+      - teamviz-data:/data
+    restart: unless-stopped
+    expose:
+      - "8080"
+
+volumes:
+  keycloak-data:
+  teamviz-data:
