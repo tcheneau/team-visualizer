@@ -239,14 +239,19 @@ func (s *Store) ListHolidays() ([]model.Holiday, error) {
 // ===== Export data (for TOML) =====
 
 type ExportData struct {
-	SchemaVersion int               `toml:"schema_version"`
-	ExportedAt    string            `toml:"exported_at"`
-	Settings      map[string]string `toml:"settings"`
-	People        []ExportPerson    `toml:"people"`
-	Planning      []ExportPlanning  `toml:"planning"`
-	Projects      []model.Project   `toml:"projects"`
-	OnCall        []ExportKeyVal    `toml:"oncall"`
-	Rotation      []ExportKeyVal    `toml:"rotation"`
+	SchemaVersion int    `toml:"schema_version"`
+	ExportedAt    string `toml:"exported_at"`
+	// Settings is map[string]any (not map[string]string) so legacy TOML
+	// exports — which carry integer settings such as window_weeks = 4 —
+	// decode instead of failing with "cannot decode TOML integer into
+	// string". Values are coerced back to strings on import, since the
+	// settings table stores everything as text.
+	Settings map[string]any   `toml:"settings"`
+	People   []ExportPerson   `toml:"people"`
+	Planning []ExportPlanning `toml:"planning"`
+	Projects []model.Project  `toml:"projects"`
+	OnCall   []ExportKeyVal   `toml:"oncall"`
+	Rotation []ExportKeyVal   `toml:"rotation"`
 }
 
 type ExportPerson struct {
@@ -261,16 +266,29 @@ type ExportPerson struct {
 	Status          string   `toml:"status"`
 	ArchivedDate    string   `toml:"archived_date"`
 	IsGuest         bool     `toml:"is_guest"`
+
+	// Legacy-compat: older exports used a nested [avatar] table and the key
+	// `guest` (instead of `is_guest`). Pointers + omitempty keep new exports
+	// clean (nil is omitted) while still decoding legacy files.
+	Avatar *legacyAvatar `toml:"avatar,omitempty"`
+	Guest  *bool         `toml:"guest,omitempty"`
+}
+
+// legacyAvatar mirrors the nested `avatar = { emoji, color }` table used by
+// the legacy export format.
+type legacyAvatar struct {
+	Emoji string `toml:"emoji"`
+	Color string `toml:"color"`
 }
 
 type ExportPlanning struct {
-	PersonID string `toml:"person_id"`
-	Date     string `toml:"date"`
-	Slot     string `toml:"slot"`
-	State    string `toml:"state"`
-	AwayType string `toml:"away_type"`
-	AwayNote string `toml:"away_note"`
-	Run      bool   `toml:"run"`
+	PersonID string                `toml:"person_id"`
+	Date     string                `toml:"date"`
+	Slot     string                `toml:"slot"`
+	State    string                `toml:"state"`
+	AwayType string                `toml:"away_type"`
+	AwayNote string                `toml:"away_note"`
+	Run      bool                  `toml:"run"`
 	Projects []model.ProjectAssign `toml:"projects"`
 }
 
@@ -287,7 +305,7 @@ func (s *Store) GetExportData() (*ExportData, error) {
 		return nil, fmt.Errorf("export settings: %w", err)
 	}
 	defer settingsRows.Close()
-	settings := make(map[string]string)
+	settings := make(map[string]any)
 	for settingsRows.Next() {
 		var k, v string
 		settingsRows.Scan(&k, &v)

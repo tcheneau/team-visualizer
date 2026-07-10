@@ -109,7 +109,10 @@ services:
       - --insecure-oidc-allow-unverified-email=true
       - --cookie-secure=false
       - --cookie-samesite=lax
-      - --whitelist-domain=localhost
+      # Allow the post-logout redirect from oauth2-proxy to Keycloak's
+      # end_session endpoint on :8090. A bare "localhost" entry only permits
+      # the default port, so the port must be explicit.
+      - --whitelist-domain=localhost:8090
     restart: unless-stopped
 
   # ---------- Team Visualizer (Go app) ----------

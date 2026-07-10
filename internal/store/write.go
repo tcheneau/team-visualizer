@@ -402,21 +402,36 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 		}
 	}
 
-	// Import settings
+	// Import settings (values may be int/bool/string in legacy exports)
 	for k, v := range data.Settings {
 		if k == "export_counter" || k == "_scrollOffset" {
 			continue
 		}
-		s.SetSetting(k, v)
+		s.SetSetting(k, fmt.Sprint(v))
 	}
 
 	// Import people
 	for _, ep := range data.People {
+		avatarEmoji, avatarColor := ep.AvatarEmoji, ep.AvatarColor
+		if ep.Avatar != nil {
+			// legacy export used a nested [avatar] table
+			if avatarEmoji == "" {
+				avatarEmoji = ep.Avatar.Emoji
+			}
+			if avatarColor == "" {
+				avatarColor = ep.Avatar.Color
+			}
+		}
+		isGuest := ep.IsGuest
+		if ep.Guest != nil {
+			// legacy export used `guest` instead of `is_guest`
+			isGuest = *ep.Guest
+		}
 		p := model.Person{
 			ID: ep.ID, Name: ep.Name, Role: ep.Role, SubTeam: ep.SubTeam,
-			AvatarEmoji: ep.AvatarEmoji, AvatarColor: ep.AvatarColor,
+			AvatarEmoji: avatarEmoji, AvatarColor: avatarColor,
 			StartDate: ep.StartDate, DefaultProjects: ep.DefaultProjects,
-			Status: ep.Status, ArchivedDate: ep.ArchivedDate, IsGuest: ep.IsGuest,
+			Status: ep.Status, ArchivedDate: ep.ArchivedDate, IsGuest: isGuest,
 		}
 		existing, _ := s.GetPerson(ep.ID)
 		if existing != nil {

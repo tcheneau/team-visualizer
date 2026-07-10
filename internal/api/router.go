@@ -10,8 +10,8 @@ import (
 	"github.com/teamviz/team-visualizer/internal/auth"
 	"github.com/teamviz/team-visualizer/internal/model"
 	"github.com/teamviz/team-visualizer/internal/store"
-	"github.com/teamviz/team-visualizer/internal/ws"
 	"github.com/teamviz/team-visualizer/internal/toml"
+	"github.com/teamviz/team-visualizer/internal/ws"
 )
 
 type Router struct {
@@ -69,7 +69,6 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 	mux.Get("/ws", r.handleWS)
 	// Export (TOML)
 	mux.Get("/export", r.exportTOML)
-
 
 	// === Write routes (mutations) ===
 
@@ -339,15 +338,16 @@ func (r *Router) exportTOML(w http.ResponseWriter, req *http.Request) {
 
 	data.ExportedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
 
-	// Increment export counter
-	counter := data.Settings["export_counter"]
+	// Increment export counter (Settings is map[string]any; the counter is
+	// always stored as a string in the DB).
+	counter, _ := data.Settings["export_counter"].(string)
 	if counter == "" {
 		counter = "1"
 	}
 	counterN, _ := strconv.Atoi(counter)
 	counterN++
 	data.Settings["export_counter"] = strconv.Itoa(counterN)
-	r.db.SetSetting("export_counter", data.Settings["export_counter"])
+	r.db.SetSetting("export_counter", strconv.Itoa(counterN))
 
 	tomlBytes, err := toml.Serialize(data)
 	if err != nil {
@@ -369,7 +369,6 @@ func (r *Router) exportTOML(w http.ResponseWriter, req *http.Request) {
 	w.Write(tomlBytes)
 }
 
-
 // ===== WebSocket =====
 
 func (r *Router) handleWS(w http.ResponseWriter, req *http.Request) {
@@ -380,6 +379,7 @@ func (r *Router) handleWS(w http.ResponseWriter, req *http.Request) {
 	}
 	r.hub.ServeWS(w, req, user.Username, string(user.Role))
 }
+
 // ===== Helpers =====
 
 func writeJSON(w http.ResponseWriter, status int, data any) {

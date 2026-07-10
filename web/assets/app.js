@@ -487,7 +487,7 @@ function renderAvailability(container) {
     function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; if (sd.state==='undetermined') return 'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${pn} + Run` : (pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
-    html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}"${amBg} style="${amBg?'':''amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}"${pmBg} style="${pmBg?'':''pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
+    html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
   });
   html += '</div>';
   let away=0,run=0,proj=0,nf=0,und=0;
@@ -950,6 +950,7 @@ function initNav() {
   document.getElementById('overlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
   if (canEdit()) { document.getElementById('btn-undo').addEventListener('click', undo); document.getElementById('btn-import').addEventListener('click', showImportModal); }
   else { document.getElementById('btn-undo').style.display = 'none'; document.getElementById('btn-import').style.display = 'none'; }
+  document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-export').addEventListener('click', doExport);
   document.getElementById('btn-help').addEventListener('click', showHelp);
 }
@@ -984,6 +985,24 @@ function updateWSStatus(status) {
   const [cls, title] = map[status] || ['ws-disconnected', 'Unknown'];
   el.className = cls;
   el.title = title;
+}
+
+// ===== LOGOUT (switch user) =====
+function logout() {
+  // One click clears BOTH sessions so a different user can sign in:
+  //  1. /oauth2/sign_out clears the oauth2-proxy session cookie, then
+  //     302-redirects the browser to the `rd` target.
+  //  2. Keycloak's end_session_endpoint ends the SSO session. The session is
+  //     identified via the browser's Keycloak SSO cookie (we deliberately omit
+  //     id_token_hint: oauth2-proxy v7.6.0 does NOT substitute {id_token} in
+  //     the `rd` URL — only in --backend-logout-url — so a literal {id_token}
+  //     would make Keycloak return 400). Without id_token_hint Keycloak shows
+  //     a one-click "confirm logout" page, then redirects to post_logout_redirect_uri.
+  //  3. The app root now has no session, so oauth2-proxy starts a fresh login.
+  const kcLogout = 'http://localhost:8090/realms/teamviz/protocol/openid-connect/logout'
+    + '?client_id=teamviz-demo'
+    + '&post_logout_redirect_uri=' + encodeURIComponent('http://localhost:8080/');
+  window.location.href = '/oauth2/sign_out?rd=' + encodeURIComponent(kcLogout);
 }
 
 // ===== INIT =====
