@@ -74,6 +74,11 @@ services:
       - --provider=keycloak-oidc
       - --client-id=teamviz-demo
       - --client-secret=demo-secret-not-for-production-use
+      # Pin scopes to ones Keycloak actually registers. The default for the
+      # keycloak-oidc provider adds a `groups` SCOPE, which Keycloak rejects
+      # with `invalid_scope` (groups are delivered as a token CLAIM via the
+      # group-membership-mapper, not as a scope).
+      - --scope=openid email profile
       # OIDC discovery is bypassed: Keycloak advertises the browser-facing
       # issuer (http://localhost:8090/...) in tokens/login URLs, but oauth2-proxy
       # reaches it over the Docker network (http://keycloak:8080/...). Splitting
@@ -85,6 +90,10 @@ services:
       - --redeem-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/token
       - --validate-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/userinfo
       - --oidc-jwks-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/certs
+      # Keycloak 25 mints tokens whose `aud` claim is ["account"] (Keycloak's
+      # built-in account client) rather than this client's id. Accept it as an
+      # extra audience so oauth2-proxy stops rejecting the token at 500.
+      - --oidc-extra-audience=account
       - --upstream=http://teamviz:8080/
       - --http-address=0.0.0.0:4180
       - --redirect-url=http://localhost:8080/oauth2/callback
