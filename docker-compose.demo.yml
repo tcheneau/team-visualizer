@@ -27,7 +27,9 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_DB: dev-file
-      KC_HOSTNAME: localhost
+      # Full URL (incl. port) so Keycloak advertises the browser-facing
+      # issuer http://localhost:8090/realms/teamviz in tokens & login redirects.
+      KC_HOSTNAME: http://localhost:8090
       KC_HTTP_ENABLED: "true"
       KC_PROXY: edge
     ports:
@@ -72,10 +74,17 @@ services:
       - --provider=keycloak-oidc
       - --client-id=teamviz-demo
       - --client-secret=demo-secret-not-for-production-use
-      - --oidc-issuer-url=http://keycloak:8080/realms/teamviz
-#      - --login-url=http://localhost:8090/realms/teamviz/protocol/openid-connect/auth
-#      - --redeem-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/token
-#      - --validate-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/userinfo
+      # OIDC discovery is bypassed: Keycloak advertises the browser-facing
+      # issuer (http://localhost:8090/...) in tokens/login URLs, but oauth2-proxy
+      # reaches it over the Docker network (http://keycloak:8080/...). Splitting
+      # endpoints by audience avoids "oidc: issuer did not match the issuer
+      # returned by provider" while keeping the ID-token iss verified.
+      - --skip-oidc-discovery=true
+      - --oidc-issuer-url=http://localhost:8090/realms/teamviz
+      - --login-url=http://localhost:8090/realms/teamviz/protocol/openid-connect/auth
+      - --redeem-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/token
+      - --validate-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/userinfo
+      - --oidc-jwks-url=http://keycloak:8080/realms/teamviz/protocol/openid-connect/certs
       - --upstream=http://teamviz:8080/
       - --http-address=0.0.0.0:4180
       - --redirect-url=http://localhost:8080/oauth2/callback
