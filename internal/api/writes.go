@@ -31,7 +31,6 @@ func (r *Router) addPerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_added", result)
-	r.hub.Broadcast("project_added", result)
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -46,8 +45,13 @@ func (r *Router) updatePerson(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	r.hub.Broadcast("person_updated", p)
-	writeJSON(w, http.StatusOK, p)
+	persisted, err := r.db.GetPerson(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	r.hub.Broadcast("person_updated", persisted)
+	writeJSON(w, http.StatusOK, persisted)
 }
 
 func (r *Router) deletePerson(w http.ResponseWriter, req *http.Request) {
@@ -163,7 +167,6 @@ func (r *Router) setSlotRange(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate, "data": body.Data})
-	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate, "data": body.Data})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":     "ok",
 		"slots_set":  len(refs),
@@ -224,8 +227,15 @@ func (r *Router) pruneData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if body.WeeksOld <= 0 {
-		settings, _ := r.db.GetSettings()
+		settings, err := r.db.GetSettings()
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
 		body.WeeksOld = settings.PruneWeeks
+		if body.WeeksOld < 1 {
+			body.WeeksOld = 12
+		}
 	}
 	deleted, err := r.db.PruneOldData(body.WeeksOld)
 	if err != nil {
@@ -282,8 +292,13 @@ func (r *Router) updateProject(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	r.hub.Broadcast("project_updated", p)
-	writeJSON(w, http.StatusOK, p)
+	persisted, err := r.db.GetProject(id)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	r.hub.Broadcast("project_updated", persisted)
+	writeJSON(w, http.StatusOK, persisted)
 }
 
 func (r *Router) deleteProject(w http.ResponseWriter, req *http.Request) {

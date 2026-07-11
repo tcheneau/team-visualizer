@@ -35,8 +35,16 @@ get_id() {
     | python3 -c "import sys,json;d=json.load(sys.stdin);print(d[0]['id'] if d else '')"
 }
 
-TOKEN="$(get_token)"
-if [ -z "${TOKEN:-}" ]; then echo "ERROR: no admin token"; exit 1; fi
+echo "Waiting for Keycloak to be ready..."
+for i in $(seq 1 30); do
+	TOKEN="$(get_token 2>/dev/null || true)"
+	if [ -n "${TOKEN:-}" ]; then
+		break
+	fi
+	echo "  attempt $i/30 — retrying in 2s..."
+	sleep 2
+done
+if [ -z "${TOKEN:-}" ]; then echo "ERROR: no admin token after 30 retries"; exit 1; fi
 
 H_JSON="Content-Type: application/json"
 

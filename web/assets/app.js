@@ -12,6 +12,12 @@ const parseDate = s => { const m = s.match(/^(\d{4})\/(\d{2})\/(\d{2})$/); retur
 const clone = o => JSON.parse(JSON.stringify(o));
 const sum = arr => arr.reduce((a,b)=>a+b,0);
 const escapeHtml = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
+const esc = escapeHtml;
+
+// Safe confirm helpers — look up names from State by id, avoiding interpolation XSS
+function confirmArchivePerson(id){ const p=getPerson(id); if(p&&confirm('Archive '+p.name+'?')){ API.post('/people/'+id+'/archive').then(()=>{ if(p){p.status='archived';p.archived_date=fmtDate(new Date());} render();}) } }
+function confirmDeletePerson(id){ const p=getPerson(id); if(p&&confirm('Delete '+p.name+'?')){ API.del('/people/'+id).then(()=>{ State.people=State.people.filter(x=>x.id!==id); render();}) } }
+function confirmDeleteProject(id){ const proj=getProject(id); if(proj&&confirm('Delete '+proj.name+'?')){ API.del('/projects/'+id).then(()=>{ State.projects=State.projects.filter(x=>x.id!==id); render();}) } }
 const fmtDateTime = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:00`;
 const fmtExportTS = d => `${d.getFullYear()}-${pad2(d.getMonth()+1)}-${pad2(d.getDate())}-${pad2(d.getHours())}-${pad2(d.getMinutes())}`;
 
@@ -164,8 +170,8 @@ const WS = {
       case 'project_added': if (!State.projects.find(p => p.id === msg.data.id)) State.projects.push(msg.data); break;
       case 'project_updated': { const i = State.projects.findIndex(p => p.id === msg.data.id); if (i >= 0) State.projects[i] = msg.data; break; }
       case 'project_deleted': State.projects = State.projects.filter(p => p.id !== msg.data.id); break;
-      case 'oncall_changed': { API.get(`/oncall?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${formatWeekStart(getVisibleWeeks()[getVisibleWeeks().length-1])}`).then(d => { State.oncall = d || {}; render(); }); return; }
-      case 'rotation_changed': { API.get(`/rotation?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${formatWeekStart(getVisibleWeeks()[getVisibleWeeks().length-1])}`).then(d => { State.rotation = d || {}; render(); }); return; }
+      case 'oncall_changed': { API.get(`/oncall?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.oncall = d || {}; render(); }); return; }
+      case 'rotation_changed': { API.get(`/rotation?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.rotation = d || {}; render(); }); return; }
       case 'settings_updated': State.settings = Object.assign({}, defaultSettings, msg.data); break;
       case 'holidays_imported': API.get('/holidays').then(d => { State.holidays = d || []; render(); }); return;
     }
@@ -178,7 +184,11 @@ const WS = {
 // planning map before a change; undo() diffs that snapshot against the
 // current state and writes each changed slot back to the server — so the
 // revert is real (persists across refresh / other clients), not just visual.
-function pushUndo() { State.undoStack = clone(State.planning); const b = $('btn-undo'); if (b) b.disabled = false; }
+function pushUndo(keys) {
+  State.undoStack = {};
+  (keys && keys.length ? keys : Object.keys(State.planning)).forEach(k => State.undoStack[k] = State.planning[k] ? clone(State.planning[k]) : null);
+  const b = $('btn-undo'); if (b) b.disabled = false;
+}
 async function undo() {
   if (!State.undoStack) return;
   const snap = State.undoStack; State.undoStack = null;
@@ -187,10 +197,9 @@ async function undo() {
   // edit being undone can't re-apply it over our authoritative reload.
   State.undoing = true;
   try {
-    const keys = new Set([...Object.keys(snap), ...Object.keys(State.planning)]);
     const writes = [];
-    keys.forEach(k => {
-      const prev = snap[k] || null, cur = State.planning[k] || null;
+    Object.keys(snap).forEach(k => {
+      const prev = snap[k], cur = State.planning[k] || null;
       if (JSON.stringify(prev) === JSON.stringify(cur)) return;
       const [pid, date, slot] = k.split('|');
       if (prev === null) writes.push(API.del('/planning/slot', { person_id: pid, date, slot }));
@@ -260,7 +269,7 @@ function isOnCall(personId, weekStart) { return !!(State.oncall[weekStart] || []
 function isRunPerson(personId, weekStart) { return !!(State.rotation[weekStart] || []).includes(personId); }
 function getRunPeople(weekStart) { return getActivePeople().filter(p => isRunPerson(p.id, weekStart)); }
 async function toggleOnCall(personId, weekStart) {
-  if (isOnCall(personId, weekStart)) { await API.del('/oncall'); State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(id => id !== personId); }
+  if (isOnCall(personId, weekStart)) { await API.del('/oncall', { person_id: personId, week_start: weekStart }); State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(id => id !== personId); }
   else { await API.put('/oncall', {person_id:personId, week_start:weekStart}); if (!State.oncall[weekStart]) State.oncall[weekStart] = []; State.oncall[weekStart].push(personId); }
   render();
 }
@@ -281,7 +290,7 @@ function calcRunCoveragePerSlot(weekStart) {
   const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   const result = [];
   days.forEach((d, di) => {
-    if (di >= 5 && !showWeekend) return;
+    if (di >= 5 && !_showWeekend) return;
     const ds = fmtDate(d);
     const dr = { dayName: dayNames[di], date: ds, am: {onRun:0,away:0,avail:0}, pm: {onRun:0,away:0,avail:0} };
     ['am','pm'].forEach(slot => {
@@ -298,11 +307,10 @@ function calcRunCoveragePerSlot(weekStart) {
 // ===== VIEW STATE =====
 let currentView = 'team', currentPersonId = null;
 let scrollOffset = 0, availabilityDayOffset = 0;
-let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name', projectsHideDone = true, showWeekend = false, teamShowGuests = false;
+let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name', projectsHideDone = true, teamShowGuests = false;
 let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeProjCount = 1;
 let editorPersonId = null, editorDate = null, editorSlot = null;
 let _showWeekend = false;
-Object.defineProperty(window, 'showWeekend', { get: () => _showWeekend, set: v => { _showWeekend = v; } });
 
 function getVisibleWeeks() {
   const n = State.settings.window_weeks || 4;
@@ -385,7 +393,7 @@ function renderTeamGrid(container) {
     const onCallAnyWeek = weeks.some(w => isOnCall(p.id, formatWeekStart(w)));
     const onCallWeeks = weeks.filter(w => isOnCall(p.id, formatWeekStart(w))).map(w => 'W'+getWeekNumber(w));
     const onCallTip = onCallWeeks.length > 0 ? 'On-call: '+onCallWeeks.join(', ') : 'Click to toggle on-call W'+getWeekNumber(weeks[0]);
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${p.role||''} · ${p.sub_team||''}">${p.avatar_emoji} ${p.name}`;
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${esc(p.role||'')} · ${esc(p.sub_team||'')}">${esc(p.avatar_emoji)} ${esc(p.name)}`;
     if (canEdit()) html += `<button class="oncall-btn${onCallAnyWeek?' active':''}" onclick="event.stopPropagation();toggleOnCall('${p.id}','${firstWeekStart}')" title="${onCallTip}">📞</button>`;
     html += '</td>';
     let prevMergeKey = null;
@@ -399,7 +407,7 @@ function renderTeamGrid(container) {
       let bgStyle = '';
       if (cls.includes('project')) { const bg = projectColorBg(sd); if (bg) bgStyle = ` style="background:${bg}"`; }
       const onmousedown = canEdit() ? ` onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})"` : '';
-      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${getSlotTitle(p, sl.date, sl.slot, sd)}"${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
+      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${escapeHtml(getSlotTitle(p, sl.date, sl.slot, sd))}"${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
       prevMergeKey = mk;
     });
     html += '</tr>';
@@ -445,7 +453,7 @@ function renderIndividual(container) {
   if (!p) { currentView = 'team'; render(); return; }
   const weeks = getVisibleWeeks();
   const wsStart = formatWeekStart(weeks[0]), wsEnd = formatWeekStart(weeks[weeks.length-1]);
-  let html = `<div class="indiv-header"><div class="person-info"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${p.avatar_emoji}</div><div><h2>${p.name}</h2><span style="color:var(--fg-muted);font-size:.85rem">${p.role||''}${p.sub_team?' · '+p.sub_team:''}${p.is_guest?' · Guest':''}</span></div></div><div class="spacer" style="flex:1"></div><button onclick="downloadICS('${p.id}')" title="Period: ${wsStart} → ${wsEnd}">📅 Export ICS</button>`;
+  let html = `<div class="indiv-header"><div class="person-info"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${esc(p.avatar_emoji)}</div><div><h2>${esc(p.name)}</h2><span style="color:var(--fg-muted);font-size:.85rem">${esc(p.role||'')}${p.sub_team?' · '+esc(p.sub_team):''}${p.is_guest?' · Guest':''}</span></div></div><div class="spacer" style="flex:1"></div><button onclick="downloadICS('${p.id}')" title="Period: ${wsStart} → ${wsEnd}">📅 Export ICS</button>`;
   if (canEdit()) html += `<button onclick="copyLastWeek('${p.id}')">📋 Copy Last Week</button>`;
   html += `<button onclick="currentView='team';render()">← Back</button></div>`;
   html += '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">';
@@ -484,11 +492,11 @@ function renderRunCoverage(container) {
     if (anyBelow) html += `<div class="warning-banner">⚠️ Some slots below target of ${runTarget}</div>`;
     if (mode === 'rotation') {
       const runPeople = getRunPeople(ws);
-      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${runPeople.length > 0 ? runPeople.map(p=>p.name).join(', ') : 'None'}</div>`;
+      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${runPeople.length > 0 ? runPeople.map(p=>esc(p.name)).join(', ') : 'None'}</div>`;
       if (canEdit()) html += `<button onclick="showRotationModal('${ws}')">Assign Run Person</button>`;
     } else {
       const people = getActivePeople();
-      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => `${p.avatar_emoji} ${p.name} (${calcRunRatio(p.id, ws).run}h)`);
+      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => `${esc(p.avatar_emoji)} ${esc(p.name)} (${calcRunRatio(p.id, ws).run}h)`);
       if (runPeople.length > 0) html += `<div style="font-size:.75rem;margin-top:4px">On run: ${runPeople.join(', ')}</div>`;
     }
     html += '</div>';
@@ -549,7 +557,7 @@ function renderGuests(container) {
   const allSlots = [];
   weeks.forEach((w, wi) => { const days = getWeekDays(w); days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const ds = fmtDate(d); ['am','pm'].forEach(slot => allSlots.push({date:ds, slot, weekIdx:wi, dayIdx:di})); }); });
   guests.forEach((p, rowIdx) => {
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')">${p.avatar_emoji} ${p.name}</td>`;
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')">${esc(p.avatar_emoji)} ${esc(p.name)}</td>`;
     let prevMergeKey = null;
     allSlots.forEach((sl, colIdx) => {
       const sd = getSlot(p.id, sl.date, sl.slot); const cls = getSlotClass(sd); const label = getCellLabel(sd);
@@ -559,7 +567,7 @@ function renderGuests(container) {
       const showLabel = !isMergedCont || cls.includes('not-filled');
       let bgStyle = ''; if (cls.includes('project')) { const bg = projectColorBg(sd); if (bg) bgStyle = ` style="background:${bg}"`; }
       const onmousedown = canEdit() ? ` onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})"` : '';
-      html += `<td class="half-day ${cls}${sep}${mergeCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${getSlotTitle(p, sl.date, sl.slot, sd)}"${bgStyle}>${showLabel?`<span class="cell-label">${escapeHtml(label)}</span>`:''}</td>`;
+      html += `<td class="half-day ${cls}${sep}${mergeCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${escapeHtml(getSlotTitle(p, sl.date, sl.slot, sd))}"${bgStyle}>${showLabel?`<span class="cell-label">${escapeHtml(label)}</span>`:''}</td>`;
       prevMergeKey = mk;
     });
     html += '</tr>';
@@ -574,9 +582,9 @@ function renderArchived(container) {
   let html = '<h2>Archived People</h2>';
   if (archived.length === 0) html += '<p style="color:var(--fg-muted)">No archived people.</p>';
   else { html += '<div class="people-list">';
-    archived.forEach(p => { html += `<div class="person-card" style="opacity:.7"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${p.avatar_emoji}</div><div class="info"><div class="name">${p.name}</div><div class="meta">${p.role||''} · Archived: ${p.archived_date||'unknown'}${p.is_guest?' · Guest':''}</div></div><div class="actions">`;
+    archived.forEach(p => { html += `<div class="person-card" style="opacity:.7"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${esc(p.avatar_emoji)}</div><div class="info"><div class="name">${esc(p.name)}</div><div class="meta">${esc(p.role||'')} · Archived: ${p.archived_date||'unknown'}${p.is_guest?' · Guest':''}</div></div><div class="actions">`;
       if (canEdit()) html += `<button onclick="API.post('/people/${p.id}/unarchive').then(()=>{const pp=getPerson('${p.id}');if(pp){pp.status='active';pp.archived_date='';}render()})">↩ Restore</button>`;
-      if (isAdmin()) html += `<button class="danger" onclick="if(confirm('Delete ${p.name}?')){API.del('/people/${p.id}').then(()=>{State.people=State.people.filter(x=>x.id!=='${p.id}');render()})}">🗑</button>`;
+      if (isAdmin()) html += `<button class="danger" onclick="confirmDeletePerson('${p.id}')">🗑</button>`;
       html += '</div></div>'; });
     html += '</div>'; }
   container.innerHTML = html;
@@ -594,8 +602,8 @@ function renderPeople(container) {
   container.innerHTML = html;
 }
 function personCard(p) {
-  let html = `<div class="person-card"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${p.avatar_emoji}</div><div class="info"><div class="name">${p.name}</div><div class="meta">${p.role||'No role'}${p.sub_team?' · '+p.sub_team:''}${p.is_guest?' · Guest':''}</div></div><div class="actions">`;
-  if (canEdit()) html += `<button onclick="showEditPersonModal('${p.id}')">✏</button><button onclick="if(confirm('Archive ${p.name}?')){API.post('/people/${p.id}/archive').then(()=>{const pp=getPerson('${p.id}');if(pp){pp.status='archived';pp.archived_date='${fmtDate(new Date())}';}render()})}">📦</button><button class="danger" onclick="if(confirm('Delete ${p.name}?')){API.del('/people/${p.id}').then(()=>{State.people=State.people.filter(x=>x.id!=='${p.id}');render()})}">🗑</button>`;
+  let html = `<div class="person-card"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${esc(p.avatar_emoji)}</div><div class="info"><div class="name">${esc(p.name)}</div><div class="meta">${esc(p.role||'No role')}${p.sub_team?' · '+esc(p.sub_team):''}${p.is_guest?' · Guest':''}</div></div><div class="actions">`;
+  if (canEdit()) html += `<button onclick="showEditPersonModal('${p.id}')">✏</button><button onclick="confirmArchivePerson('${p.id}')">📦</button><button class="danger" onclick="confirmDeletePerson('${p.id}')">🗑</button>`;
   html += '</div></div>';
   return html;
 }
@@ -623,9 +631,10 @@ function renderGeneralProjectView() {
     Object.entries(State.planning).forEach(([key, sd]) => { if (sd.projects && sd.projects.some(p => p.name.toLowerCase() === proj.name.toLowerCase())) { const pid = key.split('|')[0]; const person = getPerson(pid); if (person && !people.find(p => p.id === person.id)) people.push(person); } });
     const statusColor = STATUS_COLORS[proj.status] || '#6c757d';
     const peopleNames = people.map(p => `${p.avatar_emoji} ${p.name}`).join(', ') || 'No one assigned yet';
-    html += `<div class="project-card"><div class="proj-header"><span class="proj-emoji" style="font-size:1.3rem">${proj.emoji}</span><span class="proj-name">${escapeHtml(proj.name)}</span><span class="status-badge" style="background:${statusColor}">${STATUS_LABELS[proj.status]||proj.status}</span><span style="margin-left:auto;display:flex;gap:4px">`;
-    if (canEdit()) html += `<button onclick="showEditProjectModal('${proj.id}')" style="font-size:.75rem;padding:2px 8px">✏</button><button class="danger" onclick="if(confirm('Delete ${escapeHtml(proj.name)}?')){API.del('/projects/${proj.id}').then(()=>{State.projects=State.projects.filter(x=>x.id!=='${proj.id}');render()})}" style="font-size:.75rem;padding:2px 8px">🗑</button>`;
-    html += `</span></div>${proj.description?`<div class="proj-desc">${escapeHtml(proj.description)}</div>`:''}<div class="proj-meta">${proj.start_date?`<span>📅 ${proj.start_date}</span>`:''}${proj.end_date?`<span>→ ${proj.end_date}</span>`:''}${proj.url?`<a href="${escapeHtml(proj.url)}" target="_blank" style="font-size:.8rem">🔗 Link</a>`:''}</div><div class="proj-people">👥 ${escapeHtml(peopleNames)}</div></div>`;
+    html += `<div class="project-card"><div class="proj-header"><span class="proj-emoji" style="font-size:1.3rem">${esc(proj.emoji)}</span><span class="proj-name">${escapeHtml(proj.name)}</span><span class="status-badge" style="background:${statusColor}">${STATUS_LABELS[proj.status]||proj.status}</span><span style="margin-left:auto;display:flex;gap:4px">`;
+    if (canEdit()) html += `<button onclick="showEditProjectModal('${proj.id}')" style="font-size:.75rem;padding:2px 8px">✏</button><button class="danger" onclick="confirmDeleteProject('${proj.id}')" style="font-size:.75rem;padding:2px 8px">🗑</button>`;
+    const urlOk = proj.url && /^https?:\/\/|^mailto:/i.test(proj.url);
+    html += `</span></div>${proj.description?`<div class="proj-desc">${escapeHtml(proj.description)}</div>`:''}<div class="proj-meta">${proj.start_date?`<span>📅 ${proj.start_date}</span>`:''}${proj.end_date?`<span>→ ${proj.end_date}</span>`:''}${urlOk?`<a href="${escapeHtml(proj.url)}" target="_blank" style="font-size:.8rem">🔗 Link</a>`:proj.url?`<span style="font-size:.8rem;color:var(--fg-muted)">${escapeHtml(proj.url)}</span>`:''}</div><div class="proj-people">👥 ${escapeHtml(peopleNames)}</div></div>`;
   });
   return html;
 }
@@ -665,9 +674,9 @@ function renderGanttView() {
     const hasNoPeopleNow = proj.status === 'in_progress' && peopleNow.length === 0;
     const nowDayDiff = Math.round((now - weeks[0]) / 86400000); const nowCol = nowDayDiff / 7;
     const nowInBar = nowCol >= startCol && nowCol <= endCol + 1;
-    const peopleText = peopleNow.map(p => p.name).join(', ') || 'No one currently assigned';
-    const tooltip = `${escapeHtml(proj.name)} — ${STATUS_LABELS[proj.status]||proj.status}\nPeople now: ${peopleText}`;
-    html += `<tr class="gantt-row"><td style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:1">${proj.emoji} ${escapeHtml(proj.name)}</td>`;
+    const peopleText = peopleNow.map(p => esc(p.name)).join(', ') || 'No one currently assigned';
+    const tooltip = `${escapeHtml(proj.name)} — ${STATUS_LABELS[proj.status]||proj.status}\nPeople now: ${escapeHtml(peopleText)}`;
+    html += `<tr class="gantt-row"><td style="text-align:left;position:sticky;left:0;background:var(--surface);z-index:1">${esc(proj.emoji)} ${escapeHtml(proj.name)}</td>`;
     for (let c = 0; c < colCount; c++) {
       if (c === startCol) {
         let barStyle = `background:${statusColor};`;
@@ -722,9 +731,9 @@ function endDrag(event) {
   if (!dragState) return;
   const wasDrag = dragState.isDragging;
   const loRow = Math.min(dragState.startRow, dragState.endRow), loCol = Math.min(dragState.startCol, dragState.endCol);
+  const hiRow = Math.max(dragState.startRow, dragState.endRow), hiCol = Math.max(dragState.startCol, dragState.endCol);
   clearDragHighlight(); dragState = null;
   if (!wasDrag) { const td = document.querySelector(`td.half-day[data-row="${loRow}"][data-col="${loCol}"]`); if (td) openCellEditor(td.dataset.person, td.dataset.date, td.dataset.slot); return; }
-  const hiRow = Math.max(dragState?.startRow||loRow, dragState?.endRow||loRow), hiCol = Math.max(dragState?.startCol||loCol, dragState?.endCol||loCol);
   // Re-gather from the current DOM state
   const cells = [];
   document.querySelectorAll('td.half-day').forEach(td => { const r = parseInt(td.dataset.row), c = parseInt(td.dataset.col); if (!isNaN(r)&&!isNaN(c)&&r>=loRow&&r<=hiRow&&c>=loCol&&c<=hiCol) cells.push({personId:td.dataset.person, date:td.dataset.date, slot:td.dataset.slot}); });
@@ -760,25 +769,26 @@ function addEditorProject() { const list = document.getElementById('project-list
 function removeProject(idx) { const rows = document.getElementById('project-list').children; if (rows.length <= 1) return; rows[idx].remove(); updatePctTotal(); }
 function updatePctTotal() { const rows = document.getElementById('project-list').children; let total = 0; Array.from(rows).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 async function saveCellEditor() {
-  pushUndo();
   const awayTab = document.getElementById('editor-tab-away');
   if (awayTab && !awayTab.classList.contains('hidden')) {
     const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
     const data = { state: 'filled', away: { type, note }, projects: [], run: false };
+    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
   } else {
     const rows = document.getElementById('project-list').children; const projects = []; let total = 0;
     Array.from(rows).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
     if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
+    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
     const data = { state: projects.length > 0 || window.editorRunToggle ? 'filled' : 'not_filled', away: null, projects, run: !!window.editorRunToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
   }
   closeCellEditor(); render();
 }
-async function setUndetermined() { pushUndo(); const data = { state: 'undetermined', away: null, projects: [], run: false }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
-async function clearSlot() { pushUndo(); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
+async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, projects: [], run: false }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
+async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
 function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
 
 // ===== RANGE EDITOR =====
@@ -805,9 +815,9 @@ function removeRangeProject(row) { const list = document.getElementById('range-p
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } pushUndo(); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false} : projects.length > 0 ? {state:'filled',away:null,projects,run} : run ? {state:'filled',away:null,projects:[],run:true} : {state:'not_filled',away:null,projects:[],run:false}; const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeUndetermined() { pushUndo(); const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeClear() { pushUndo(); const cells = getRangeEditorCells(); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false} : projects.length > 0 ? {state:'filled',away:null,projects,run} : run ? {state:'filled',away:null,projects:[],run:true} : {state:'not_filled',away:null,projects:[],run:false}; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 
 // ===== MODAL SYSTEM =====
 function showModal(html) { document.getElementById('modal-content').innerHTML = html; document.getElementById('overlay').classList.remove('hidden'); }
@@ -980,7 +990,8 @@ async function copyLastWeek(personId) {
   const weeks = getVisibleWeeks(); if (weeks.length < 2) { toast('Need at least 2 weeks visible', 'error'); return; }
   const fromWS = formatWeekStart(addWeeks(weeks[0], -1)); const toWS = formatWeekStart(weeks[0]);
   if (!confirm("Copy last week's assignments? Away entries skipped.")) return;
-  pushUndo();
+  const toKeys = getWeekDays(parseDate(toWS)).filter((d,di)=>di<5).flatMap(d => ['am','pm'].map(s => getSlotKey(personId, fmtDate(d), s)));
+  pushUndo(toKeys);
   const result = await API.post('/planning/copy-week', { person_id: personId, from_week_start: fromWS, to_week_start: toWS });
   await API.reloadPlanning(); render();
   if (result.copied > 0) { const s = document.getElementById('status-left'); if (s) { s.textContent = `📋 Copied ${result.copied} slots`; setTimeout(updateStatusBar, 2000); } }
@@ -997,10 +1008,10 @@ function modalOpen() {
   return (ov && !ov.classList.contains('hidden')) || (ce && !ce.classList.contains('hidden'));
 }
 document.addEventListener('keydown', (e) => {
-  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
-  if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+  if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+  if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
   if (e.key === 'u' && !e.ctrlKey && editorPersonId) setUndetermined();
   if (e.key === 'r' && !e.ctrlKey && editorPersonId) { window.editorRunToggle = !window.editorRunToggle; const cb = document.getElementById('cell-editor')?.querySelector('input[type="checkbox"]'); if (cb) cb.checked = window.editorRunToggle; }
   // Arrow keys move the timeframe in the team grid & availability views

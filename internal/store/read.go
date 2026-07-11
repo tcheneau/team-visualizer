@@ -82,7 +82,9 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 		}
 		e.Data.Run = run != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
-			json.Unmarshal([]byte(projectsJSON), &e.Data.Projects)
+			if err := json.Unmarshal([]byte(projectsJSON), &e.Data.Projects); err != nil {
+				return nil, fmt.Errorf("scan planning projects: %w", err)
+			}
 		}
 		entries = append(entries, e)
 	}
@@ -115,7 +117,9 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 		}
 		e.Data.Run = run != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
-			json.Unmarshal([]byte(projectsJSON), &e.Data.Projects)
+			if err := json.Unmarshal([]byte(projectsJSON), &e.Data.Projects); err != nil {
+				return nil, fmt.Errorf("scan person planning projects: %w", err)
+			}
 		}
 		entries = append(entries, e)
 	}

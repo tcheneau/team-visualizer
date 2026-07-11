@@ -12,6 +12,9 @@ import (
 
 // Serialize produces a TOML representation of all exported data.
 func Serialize(data *store.ExportData) ([]byte, error) {
+	// Copy to avoid mutating the caller's data
+	d := *data
+	data = &d
 	if data.ExportedAt == "" || data.ExportedAt == "now" {
 		data.ExportedAt = time.Now().UTC().Format("2006-01-02T15:04:05Z")
 	}

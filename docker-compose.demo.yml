@@ -122,7 +122,7 @@ services:
       TVZ_JWT_SECRET: demo-jwt-secret-not-for-production
       TVZ_DB_PATH: /data/teamviz.db
       TVZ_LISTEN: ":8080"
-      TVZ_PROXY_HEADER_USER: "X-Forwarded-User"
+      TVZ_PROXY_HEADER_USER: "X-Forwarded-Preferred-Username"
       TVZ_PROXY_HEADER_GROUPS: "X-Forwarded-Groups"
       TVZ_ADMIN_GROUP: "tvz-admin"
       TVZ_NORMAL_GROUP: "tvz-normal"
@@ -132,6 +132,12 @@ services:
     restart: unless-stopped
     expose:
       - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/api/health 2>/dev/null | grep -q ok || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
 
 volumes:
   keycloak-data:

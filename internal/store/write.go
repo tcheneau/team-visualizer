@@ -234,7 +234,7 @@ func (s *Store) ResetAllData() error {
 	if err != nil {
 		return err
 	}
-	tables := []string{"planning", "oncall", "rotation", "people", "projects", "holidays"}
+	tables := []string{"planning", "oncall", "rotation", "people", "projects"}
 	for _, t := range tables {
 		if _, err := tx.Exec("DELETE FROM " + t); err != nil {
 			tx.Rollback()
@@ -390,7 +390,11 @@ func (s *Store) ImportHolidays(holidays []model.Holiday) (int, error) {
 		}
 		count++
 	}
-	return count, tx.Commit()
+	err = tx.Commit()
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
 }
 
 // ===== TOML Import =====
@@ -407,14 +411,15 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 		if k == "export_counter" || k == "_scrollOffset" {
 			continue
 		}
-		s.SetSetting(k, fmt.Sprint(v))
+		if e := s.SetSetting(k, fmt.Sprint(v)); e != nil {
+			return created, updated, fmt.Errorf("import setting %s: %w", k, e)
+		}
 	}
 
 	// Import people
 	for _, ep := range data.People {
 		avatarEmoji, avatarColor := ep.AvatarEmoji, ep.AvatarColor
 		if ep.Avatar != nil {
-			// legacy export used a nested [avatar] table
 			if avatarEmoji == "" {
 				avatarEmoji = ep.Avatar.Emoji
 			}
@@ -424,7 +429,6 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 		}
 		isGuest := ep.IsGuest
 		if ep.Guest != nil {
-			// legacy export used `guest` instead of `is_guest`
 			isGuest = *ep.Guest
 		}
 		p := model.Person{
@@ -433,16 +437,22 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 			StartDate: ep.StartDate, DefaultProjects: ep.DefaultProjects,
 			Status: ep.Status, ArchivedDate: ep.ArchivedDate, IsGuest: isGuest,
 		}
-		existing, _ := s.GetPerson(ep.ID)
+		existing, e := s.GetPerson(ep.ID)
+		if e != nil {
+			return created, updated, fmt.Errorf("import get person %s: %w", ep.ID, e)
+		}
 		if existing != nil {
-			s.UpdatePerson(ep.ID, p)
+			if e := s.UpdatePerson(ep.ID, p); e != nil {
+				return created, updated, fmt.Errorf("import update person %s: %w", ep.ID, e)
+			}
 			updated++
 		} else {
-			// For replace mode or new people, use the provided ID
 			if p.ID == "" {
 				p.ID = uuid.New().String()
 			}
-			s.AddPerson(p)
+			if _, e := s.AddPerson(p); e != nil {
+				return created, updated, fmt.Errorf("import add person %s: %w", p.ID, e)
+			}
 			created++
 		}
 	}
@@ -457,24 +467,32 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 		if projs == nil {
 			projs = []model.ProjectAssign{}
 		}
-		s.SetSlot(ep.PersonID, ep.Date, ep.Slot, model.SlotData{
+		if e := s.SetSlot(ep.PersonID, ep.Date, ep.Slot, model.SlotData{
 			State: ep.State, Away: away, Projects: projs, Run: ep.Run,
-		})
+		}); e != nil {
+			return created, updated, fmt.Errorf("import planning %s %s %s: %w", ep.PersonID, ep.Date, ep.Slot, e)
+		}
 	}
 
 	// Import projects
 	for _, proj := range data.Projects {
-		s.UpsertProjectByName(proj)
+		if _, e := s.UpsertProjectByName(proj); e != nil {
+			return created, updated, fmt.Errorf("import project %s: %w", proj.Name, e)
+		}
 	}
 
 	// Import on-call
 	for _, oc := range data.OnCall {
-		s.SetOnCall(oc.PersonID, oc.WeekStart, true)
+		if e := s.SetOnCall(oc.PersonID, oc.WeekStart, true); e != nil {
+			return created, updated, fmt.Errorf("import oncall %s %s: %w", oc.PersonID, oc.WeekStart, e)
+		}
 	}
 
 	// Import rotation
 	for _, rot := range data.Rotation {
-		s.SetRotation(rot.PersonID, rot.WeekStart, true)
+		if e := s.SetRotation(rot.PersonID, rot.WeekStart, true); e != nil {
+			return created, updated, fmt.Errorf("import rotation %s %s: %w", rot.PersonID, rot.WeekStart, e)
+		}
 	}
 
 	return created, updated, nil

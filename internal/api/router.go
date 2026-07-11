@@ -33,8 +33,6 @@ func (r *Router) Routes() chi.Router {
 func (r *Router) RegisterRoutes(mux chi.Router) {
 	// Apply auth middleware to all API routes
 	mux.Use(r.auth.Middleware)
-	// Apply auth middleware to all API routes
-	mux.Use(r.auth.Middleware)
 
 	// Health check
 	mux.Get("/health", r.health)
