@@ -40,6 +40,9 @@ function getWeekStart(date) {
 }
 function addWeeks(date, n) { const d = new Date(date); d.setDate(d.getDate() + n * 7); return d; }
 function formatWeekStart(d) { return fmtDate(d); }
+// Last calendar day (Sunday) of the final visible week — used as the inclusive
+// upper bound when fetching planning, so Tue–Sun of the last week aren't cut off.
+function windowEndDate(weeks) { const d = new Date(weeks[weeks.length-1]); d.setDate(d.getDate()+6); return fmtDate(d); }
 function getWeekDays(weekStart) {
   const days = [];
   for (let i = 0; i < 7; i++) { const d = new Date(weekStart); d.setDate(d.getDate() + i); days.push(d); }
@@ -55,7 +58,7 @@ const State = {
   user: null, token: null,
   people: [], projects: [], planning: {}, settings: {},
   oncall: {}, rotation: {}, holidays: [],
-  scrollOffset: 0, undoStack: null,
+  scrollOffset: 0, undoStack: null, undoing: false,
 };
 
 function getSlotKey(personId, date, slot) { return `${personId}|${date}|${slot}`; }
@@ -87,7 +90,7 @@ const API = {
   get: p => API.call('GET', p),
   post: (p,b) => API.call('POST', p, b),
   put: (p,b) => API.call('PUT', p, b),
-  del: p => API.call('DELETE', p),
+  del: (p,b) => API.call('DELETE', p, b),
 
   async loadAll() {
     const [people, projects, settings, holidays] = await Promise.all([
@@ -100,7 +103,7 @@ const API = {
     // Load planning for current visible window
     const weeks = getVisibleWeeks();
     const startDate = formatWeekStart(weeks[0]);
-    const endDate = formatWeekStart(weeks[weeks.length-1]);
+    const endDate = windowEndDate(weeks);
     const planningEntries = await API.get(`/planning?start=${startDate}&end=${endDate}`);
     State.planning = {};
     (planningEntries || []).forEach(e => { State.planning[getSlotKey(e.person_id, e.date, e.slot)] = e.data; });
@@ -116,7 +119,7 @@ const API = {
   async reloadPlanning() {
     const weeks = getVisibleWeeks();
     const startDate = formatWeekStart(weeks[0]);
-    const endDate = formatWeekStart(weeks[weeks.length-1]);
+    const endDate = windowEndDate(weeks);
     const planningEntries = await API.get(`/planning?start=${startDate}&end=${endDate}`);
     State.planning = {};
     (planningEntries || []).forEach(e => { State.planning[getSlotKey(e.person_id, e.date, e.slot)] = e.data; });
@@ -150,15 +153,15 @@ const WS = {
   },
   onMessage(msg) {
     switch (msg.type) {
-      case 'person_added': State.people.push(msg.data); break;
+      case 'person_added': if (!State.people.find(p => p.id === msg.data.id)) State.people.push(msg.data); break;
       case 'person_updated': { const i = State.people.findIndex(p => p.id === msg.data.id); if (i >= 0) State.people[i] = msg.data; break; }
       case 'person_deleted': State.people = State.people.filter(p => p.id !== msg.data.id); break;
       case 'person_archived': case 'person_unarchived': { const p = getPerson(msg.data.id); if (p) { p.status = msg.type === 'person_archived' ? 'archived' : 'active'; p.archived_date = msg.type === 'person_archived' ? fmtDate(new Date()) : ''; } break; }
-      case 'planning_updated': { const e = msg.data; State.planning[getSlotKey(e.person_id, e.date, e.slot)] = e.data; break; }
-      case 'planning_cleared': { const e = msg.data; delete State.planning[getSlotKey(e.person_id, e.date, e.slot)]; break; }
+      case 'planning_updated': { if (State.undoing) break; const e = msg.data; State.planning[getSlotKey(e.person_id, e.date, e.slot)] = e.data; break; }
+      case 'planning_cleared': { if (State.undoing) break; const e = msg.data; delete State.planning[getSlotKey(e.person_id, e.date, e.slot)]; break; }
       case 'planning_range': case 'planning_range_cleared': API.reloadPlanning().then(render); return;
       case 'planning_copied': case 'planning_pruned': case 'data_reset': case 'data_imported': API.reloadPlanning().then(render); return;
-      case 'project_added': State.projects.push(msg.data); break;
+      case 'project_added': if (!State.projects.find(p => p.id === msg.data.id)) State.projects.push(msg.data); break;
       case 'project_updated': { const i = State.projects.findIndex(p => p.id === msg.data.id); if (i >= 0) State.projects[i] = msg.data; break; }
       case 'project_deleted': State.projects = State.projects.filter(p => p.id !== msg.data.id); break;
       case 'oncall_changed': { API.get(`/oncall?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${formatWeekStart(getVisibleWeeks()[getVisibleWeeks().length-1])}`).then(d => { State.oncall = d || {}; render(); }); return; }
@@ -171,11 +174,34 @@ const WS = {
 };
 
 // ===== UNDO (single-level, client-side) =====
-function pushUndo() { State.undoStack = clone({ people: State.people, planning: State.planning }); if ($('btn-undo')) $('btn-undo').disabled = false; }
-function undo() {
+// Single-level undo for planning edits. pushUndo() snapshots the whole
+// planning map before a change; undo() diffs that snapshot against the
+// current state and writes each changed slot back to the server — so the
+// revert is real (persists across refresh / other clients), not just visual.
+function pushUndo() { State.undoStack = clone(State.planning); const b = $('btn-undo'); if (b) b.disabled = false; }
+async function undo() {
   if (!State.undoStack) return;
-  State.people = State.undoStack.people; State.planning = State.undoStack.planning;
-  State.undoStack = null; if ($('btn-undo')) $('btn-undo').disabled = true;
+  const snap = State.undoStack; State.undoStack = null;
+  const b = $('btn-undo'); if (b) b.disabled = true;
+  // Suppress WS planning echoes while reverting, so a racing echo of the
+  // edit being undone can't re-apply it over our authoritative reload.
+  State.undoing = true;
+  try {
+    const keys = new Set([...Object.keys(snap), ...Object.keys(State.planning)]);
+    const writes = [];
+    keys.forEach(k => {
+      const prev = snap[k] || null, cur = State.planning[k] || null;
+      if (JSON.stringify(prev) === JSON.stringify(cur)) return;
+      const [pid, date, slot] = k.split('|');
+      if (prev === null) writes.push(API.del('/planning/slot', { person_id: pid, date, slot }));
+      else writes.push(API.put('/planning/slot', { person_id: pid, date, slot, data: prev }));
+    });
+    if (writes.length === 0) return;
+    await Promise.all(writes);
+    await API.reloadPlanning(); // sync local state to the authoritative server state
+  } finally {
+    State.undoing = false;
+  }
   render();
 }
 
@@ -272,7 +298,7 @@ function calcRunCoveragePerSlot(weekStart) {
 // ===== VIEW STATE =====
 let currentView = 'team', currentPersonId = null;
 let scrollOffset = 0, availabilityDayOffset = 0;
-let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name', projectsHideDone = true, showWeekend = false;
+let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name', projectsHideDone = true, showWeekend = false, teamShowGuests = false;
 let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeProjCount = 1;
 let editorPersonId = null, editorDate = null, editorSlot = null;
 let _showWeekend = false;
@@ -323,7 +349,8 @@ function projectNamesDatalist() {
 
 // ===== TEAM GRID VIEW =====
 function renderTeamGrid(container) {
-  const people = getActivePeople();
+  let people = getActivePeople();
+  if (teamShowGuests) people = people.concat(getActiveGuests());
   if (people.length === 0) { container.innerHTML = canEdit() ? '<div id="onboarding"><h1>👋 Welcome</h1><p>Add team members to start planning.</p><div class="actions"><button onclick="showAddPersonModal(false)">➕ Add Person</button></div></div>' : '<p>No team members yet.</p>'; return; }
   const weeks = getVisibleWeeks();
   const slotsPerWeek = _showWeekend ? 14 : 10;
@@ -331,19 +358,29 @@ function renderTeamGrid(container) {
   weeks.forEach((w, wi) => { const ws = formatWeekStart(w); const wn = getWeekNumber(w); const sep = wi > 0 ? ' week-start' : ''; html += `<th colspan="${slotsPerWeek}" class="${sep}">W${wn} ${ws.slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; html += `<th colspan="2" class="day-header${sep}">${dayNames[di]}</th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; html += `<th colspan="2" class="day-header${sep}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span></th>`; });
   });
   html += '</tr></thead><tbody>';
   // Build allSlots
   const allSlots = [];
   weeks.forEach((w, wi) => { const days = getWeekDays(w); days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const ds = fmtDate(d); ['am','pm'].forEach(slot => allSlots.push({date:ds, slot, weekIdx:wi, dayIdx:di})); }); });
-  // Sort + group
-  let peopleSorted = people.slice().sort((a,b) => a.name.localeCompare(b.name));
-  if (teamGroupBy === 'sub_team') { peopleSorted.sort((a,b) => { const sa=(a.sub_team||'').toLowerCase(), sb=(b.sub_team||'').toLowerCase(); if (sa===''&&sb!=='') return 1; if (sb===''&&sa!=='') return -1; if (sa!==sb) return sa.localeCompare(sb); return a.name.localeCompare(b.name); }); }
+  // Sort + group. Guests are always grouped together at the end; under a
+  // "Guests" sub-team when grouping by sub-team.
+  let peopleSorted = people.slice();
+  if (teamGroupBy === 'sub_team') {
+    peopleSorted.sort((a,b) => {
+      if (a.is_guest !== b.is_guest) return a.is_guest ? 1 : -1;
+      const sa=(a.is_guest?'guests':(a.sub_team||'other')).toLowerCase(), sb=(b.is_guest?'guests':(b.sub_team||'other')).toLowerCase();
+      if (sa!==sb) return sa.localeCompare(sb);
+      return a.name.localeCompare(b.name);
+    });
+  } else {
+    peopleSorted.sort((a,b) => (a.is_guest?1:0)-(b.is_guest?1:0) || a.name.localeCompare(b.name));
+  }
   let lastSubTeam = null;
   const runTarget = State.settings.run_target_persons || 3;
   peopleSorted.forEach((p, rowIdx) => {
-    if (teamGroupBy === 'sub_team') { const st = p.sub_team || 'Other'; if (st !== lastSubTeam) { lastSubTeam = st; html += `<tr class="subteam-row"><td colspan="${allSlots.length+1}">${escapeHtml(st)}</td></tr>`; } }
+    if (teamGroupBy === 'sub_team') { const st = p.is_guest ? 'Guests' : (p.sub_team || 'Other'); if (st !== lastSubTeam) { lastSubTeam = st; html += `<tr class="subteam-row"><td colspan="${allSlots.length+1}">${escapeHtml(st)}</td></tr>`; } }
     const firstWeekStart = formatWeekStart(weeks[0]);
     const onCallAnyWeek = weeks.some(w => isOnCall(p.id, formatWeekStart(w)));
     const onCallWeeks = weeks.filter(w => isOnCall(p.id, formatWeekStart(w))).map(w => 'W'+getWeekNumber(w));
@@ -380,14 +417,15 @@ function renderTeamGrid(container) {
   html += '</tr></tbody></table></div>';
   // Nav controls
   html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-    <button onclick="scrollOffset--;API.reloadPlanning();render()">◀ Earlier</button>
+    <button onclick="scrollOffset--;API.reloadPlanning().then(render)">◀ Earlier</button>
     <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
-    <button onclick="scrollOffset++;API.reloadPlanning();render()">Later ▶</button>
-    <button onclick="scrollOffset=0;API.reloadPlanning();render()" style="margin-left:8px">Today</button>
+    <button onclick="scrollOffset++;API.reloadPlanning().then(render)">Later ▶</button>
+    <button onclick="scrollOffset=0;API.reloadPlanning().then(render)" style="margin-left:8px">Today</button>
     <span style="margin-left:12px;color:var(--fg-muted)">Group by:</span>
     <button onclick="teamGroupBy='name';render()" style="font-weight:${teamGroupBy==='name'?'700':'400'}">Name</button>
     <button onclick="teamGroupBy='sub_team';render()" style="font-weight:${teamGroupBy==='sub_team'?'700':'400'}">Sub-team</button>
     <label style="margin-left:12px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${_showWeekend?'checked':''} onchange="_showWeekend=this.checked;render()" style="width:auto"> Weekends</label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${teamShowGuests?'checked':''} onchange="teamShowGuests=this.checked;render()" style="width:auto"> Guests</label>
   </div>`;
   // Legend
   html += `<div style="display:flex;gap:12px;margin-top:8px;font-size:.75rem;flex-wrap:wrap">
@@ -505,7 +543,7 @@ function renderGuests(container) {
   weeks.forEach((w, wi) => { html += `<th colspan="${slotsPerWeek}" class="${wi>0?'week-start':''}">W${getWeekNumber(w)} ${formatWeekStart(w).slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; html += `<th colspan="2" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]}</th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; html += `<th colspan="2" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span></th>`; });
   });
   html += '</tr></thead><tbody>';
   const allSlots = [];
@@ -526,7 +564,7 @@ function renderGuests(container) {
     });
     html += '</tr>';
   });
-  html += `</tbody></table></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button onclick="scrollOffset--;API.reloadPlanning();render()">◀ Earlier</button><button onclick="scrollOffset=0;API.reloadPlanning();render()">Today</button><button onclick="scrollOffset++;API.reloadPlanning();render()">Later ▶</button></div>`;
+  html += `</tbody></table></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button onclick="scrollOffset--;API.reloadPlanning().then(render)">◀ Earlier</button><button onclick="scrollOffset=0;API.reloadPlanning().then(render)">Today</button><button onclick="scrollOffset++;API.reloadPlanning().then(render)">Later ▶</button></div>`;
   container.innerHTML = html;
 }
 
@@ -655,7 +693,7 @@ function renderSettings(container) {
   html += `<div class="field"><label>Prune threshold (weeks)</label><input type="number" min="1" value="${s.prune_weeks}" onchange="API.put('/settings',{prune_weeks:String(Math.max(1,+this.value))}).then(()=>{State.settings.prune_weeks=Math.max(1,+this.value)})"></div>`;
   if (isAdmin()) { html += `<div class="field"><label>Run mode</label><select onchange="API.put('/settings',{run_mode:this.value}).then(()=>{State.settings.run_mode=this.value;render()})"><option value="ratio" ${s.run_mode==='ratio'?'selected':''}>Ratio</option><option value="rotation" ${s.run_mode==='rotation'?'selected':''}>Rotation</option></select></div>`;
     html += `<div class="field"><label>Run target (persons)</label><input type="number" min="0" value="${s.run_target_persons}" onchange="API.put('/settings',{run_target_persons:String(+this.value)}).then(()=>{State.settings.run_target_persons=+this.value;render()})"></div>`; }
-  html += `<div class="field"><label>Theme</label><select onchange="API.put('/settings',{theme:this.value}).then(()=>{State.settings.theme=this.value;render()})"><option value="dracula" ${s.theme==='dracula'?'selected':''}>Dracula</option><option value="monokai" ${s.theme==='monokai'?'selected':''}>Monokai</option><option value="light" ${s.theme==='light'?'selected':''}>Light</option></select></div>`;
+  html += `<div class="field"><label>Theme</label><select onchange="API.put('/settings',{theme:this.value}).then(()=>{State.settings.theme=this.value;render()})">${['dracula','monokai','light','nord','solarized_light','solarized_dark','github','github_dark','one_dark','gruvbox','tokyo_night','catppuccin'].map(t=>`<option value="${t}" ${s.theme===t?'selected':''}>${t.split('_').map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ')}</option>`).join('')}</select></div>`;
   html += '</div>';
   if (isAdmin()) html += '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="if(confirm(\'Prune old data?\')){API.post(\'/planning/prune\',{}).then(r=>{alert(\'Pruned \'+r.deleted+\' entries\');API.reloadPlanning().then(render)})}">🧹 Prune Old Data</button><button class="danger" onclick="if(confirm(\'Reset ALL data?\')){API.post(\'/reset\',{}).then(()=>{API.loadAll().then(render)})}">⚠️ Reset All Data</button></div>';
   container.innerHTML = html;
@@ -722,6 +760,7 @@ function addEditorProject() { const list = document.getElementById('project-list
 function removeProject(idx) { const rows = document.getElementById('project-list').children; if (rows.length <= 1) return; rows[idx].remove(); updatePctTotal(); }
 function updatePctTotal() { const rows = document.getElementById('project-list').children; let total = 0; Array.from(rows).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 async function saveCellEditor() {
+  pushUndo();
   const awayTab = document.getElementById('editor-tab-away');
   if (awayTab && !awayTab.classList.contains('hidden')) {
     const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
@@ -738,8 +777,8 @@ async function saveCellEditor() {
   }
   closeCellEditor(); render();
 }
-async function setUndetermined() { const data = { state: 'undetermined', away: null, projects: [], run: false }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
-async function clearSlot() { await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
+async function setUndetermined() { pushUndo(); const data = { state: 'undetermined', away: null, projects: [], run: false }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
+async function clearSlot() { pushUndo(); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
 function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
 
 // ===== RANGE EDITOR =====
@@ -766,17 +805,33 @@ function removeRangeProject(row) { const list = document.getElementById('range-p
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false} : projects.length > 0 ? {state:'filled',away:null,projects,run} : run ? {state:'filled',away:null,projects:[],run:true} : {state:'not_filled',away:null,projects:[],run:false}; const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeUndetermined() { const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeClear() { const cells = getRangeEditorCells(); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } pushUndo(); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false} : projects.length > 0 ? {state:'filled',away:null,projects,run} : run ? {state:'filled',away:null,projects:[],run:true} : {state:'not_filled',away:null,projects:[],run:false}; const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeUndetermined() { pushUndo(); const cells = getRangeEditorCells(); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeClear() { pushUndo(); const cells = getRangeEditorCells(); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 
 // ===== MODAL SYSTEM =====
 function showModal(html) { document.getElementById('modal-content').innerHTML = html; document.getElementById('overlay').classList.remove('hidden'); }
 function closeModal() { document.getElementById('overlay').classList.add('hidden'); }
 
 // ===== EMOJI PICKER =====
-const EMOJI_SET = ['😀','😎','🤩','😇','🙃','🧐','🤓','😈','👻','🤖','👽','🐱','🐶','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🦋','🐢','🦄','🐉','🐲','🦅','🦉','🐧','🐺','🦝','🐙','🌟','⚡','🔥','❄️','🌈','🎨','🔧','⚙️','🚀','🛸','🏆','🎮','🎸','🎺','🎹','☕','🍕','🍔','🌮','🍣','🍩','🍪','🎉','✨','💎','🎯','🧩','📚','🔬','🧪','💻','🖥️','⌨️','📊','📈','💡','🔑','🗺️','🧭','⏰','📅','📌','✅','❌','⚠️','🔔','📣','💬','👁️','🧠','💪','🤝','👋','🙌','👍'];
-function toggleEmojiPicker(inputId, btn) { let picker = document.getElementById('emoji-picker'); if (picker) { picker.remove(); return; } picker = document.createElement('div'); picker.id = 'emoji-picker'; picker.style.cssText = 'position:fixed;z-index:300;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;box-shadow:0 4px 24px rgba(0,0,0,.3);max-width:320px;max-height:240px;overflow-y:auto;display:grid;grid-template-columns:repeat(12,1fr);gap:2px'; EMOJI_SET.forEach(em => { const b = document.createElement('button'); b.textContent = em; b.style.cssText = 'font-size:1.2rem;padding:2px;border:none;background:transparent;cursor:pointer;border-radius:4px'; b.onmouseenter = () => b.style.background = 'var(--surface-hover)'; b.onmouseleave = () => b.style.background = 'transparent'; b.onclick = (e) => { e.preventDefault(); document.getElementById(inputId).value = em; picker.remove(); }; picker.appendChild(b); }); const rect = btn.getBoundingClientRect(); picker.style.top = (rect.bottom + 4) + 'px'; picker.style.left = rect.left + 'px'; document.body.appendChild(picker); setTimeout(() => { const close = (ev) => { if (!picker.contains(ev.target) && ev.target !== btn) { picker.remove(); document.removeEventListener('click', close); } }; document.addEventListener('click', close); }, 0); }
+const EMOJI_SET = ['😀','😃','😄','😁','😆','😅','🤣','😂','🙂','🙃','😉','😊','😇','🥰','😍','🤩','😘','😗','☺️','😚','😙','🥲','😋','😛','😜','🤪','😝','🤑','🤗','🤭','🤫','🤔','🤐','🤨','😐','😑','😶','😏','😒','🙄','😬','🤥','😌','😔','😪','🤤','😴','😷','🤒','🤕','🤢','🤮','🤧','🥵','🥶','🥴','😵','🤯','🤠','🥳','😎','🤓','🧐','😕','😟','🙁','😮','😯','😲','😳','🥺','😦','😧','😨','😰','😥','😢','😭','😱','😖','😣','😞','😓','😩','😫','🥱','😤','😡','😠','🤬','😈','👿','💀','👻','🤖','👽','👾','🤡','👹','👺','🐱','🐶','🦊','🐻','🐼','🐨','🐯','🦁','🐮','🐷','🐸','🐵','🙈','🙉','🙊','🐒','🐔','🐧','🐦','🐤','🦆','🦅','🦉','🐺','🦝','🐮','🐃','🐂','🐄','🦌','🐎','🦄','🐉','🐲','🦕','🦖','🐢','🐊','🦎','🐍','🐙','🦑','🦐','🦞','🦀','🐠','🐟','🐬','🐳','🐋','🦈','🦋','🐌','🐝','🐞','🐜','🦗','🕷️','🦂','🦟','🦠','💐','🌸','💮','🏵️','🌹','🌺','🌻','🌼','🌷','🌱','🌲','🌳','🌴','🌵','🌾','🍀','🍃','🍂','🍁','🌍','🌎','🌏','🌕','🌙','⭐','🌟','✨','⚡','🔥','💥','☀️','⛅','☁️','🌧️','⛈️','❄️','☃️','🌈','🌊','💧','🎨','🎭','🎬','🎤','🎧','🎼','🎹','🥁','🎷','🎺','🎸','🪕','🎻','🎲','🎯','🎳','🎮','🎰','🧩','♟️','⚽','🏀','🏈','⚾','🎾','🏐','🏉','🥏','🎱','🏓','🏸','🥊','🥋','🥅','🏒','🏑','🥌','🛷','⛸️','🪂','🏆','🥇','🥈','🥉','🏅','🎖️','🎪','🚀','🛸','🚁','✈️','🛩️','🚂','🚃','🚄','🚅','🚆','🚇','🚈','🚊','🚉','🚝','🚲','🛵','🏍️','🚗','🚕','🚙','🚌','🚎','🏎️','🚓','🚑','🚒','🚐','🚚','🚛','🛴','🚢','⛵','🚤','🛶','⚓','🚧','🏠','🏡','🏢','🏣','🏤','🏥','🏦','🏨','🏩','🏫','🏬','🏭','🏯','🏰','🏗️','🔧','🔨','🛠️','⚒️','🔩','⚙️','🧰','🧲','🔬','🔭','📡','🧪','🧫','🧬','💻','🖥️','⌨️','🖱️','💽','💾','💿','📀','📱','☎️','📞','📟','📠','🔋','🔌','💡','🔦','🕯️','📔','📕','📖','📚','📓','📒','📃','📜','📰','📑','🔖','🏷️','✏️','🖊️','🖌️','🖍️','📝','✅','❌','⚠️','🔔','📣','📢','💬','💭','🗯️','👁️','🧠','🦴','💪','🦾','🦿','🦵','🦶','👂','🦻','👃','🦷','🤝','👋','🙌','👏','👍','👎','👊','✊','🤛','🤜','🤞','✌️','🤟','🤘','👌','🤌','🤏','👈','👉','👆','👇','☝️','✋','🤚','🖐️','🖖','👋','🤙','💪','☕','🍵','🍶','🍾','🍷','🍸','🍹','🍺','🍻','🥂','🥃','🥤','🧃','🧉','🧊','🥢','🍽️','🍴','🥄','🔪','🍳','🍲','🥘','🍿','🧂','🥫','🍱','🍘','🍚','🍛','🍜','🍝','🍠','🍢','🍣','🍤','🍥','🥮','🍡','🥟','🥠','🥡','🍦','🍧','🍨','🍩','🍪','🎂','🍰','🧁','🥧','🍫','🍬','🍭','🍮','🍯','🍎','🍏','🍐','🍊','🍋','🍌','🍉','🍇','🍓','🫐','🍈','🍒','🍑','🥭','🍍','🥥','🥝','🍅','🍆','🥑','🥦','🥬','🥒','🌶️','🫑','🌽','🥕','🧄','🧅','🥔','🍠','🥐','🥯','🍞','🥖','🧀','🥚','🧇','🥞','🧈','🔑','🗝️','🚪','🛏️','🛋️','🪑','🚽','🚿','🛁','🧴','🧷','🧹','🧺','🧻','🧼','🧽','🛒','⚰️','⚱️','🗿','🏧','🚮','🚇','🚷','🚯','🚳','🚱','🔞','📵','🚭','🚫','✳️','❇️','❓','❕','❗','‼️','⁉️','🔅','🔆','〽️','⚠️','🚸','🔱','⚜️','🔰','♻️','✅'];
+function randomEmoji() { return EMOJI_SET[Math.floor(Math.random() * EMOJI_SET.length)]; }
+function toggleEmojiPicker(inputId, btn) {
+  let picker = document.getElementById('emoji-picker'); if (picker) { picker.remove(); return; }
+  picker = document.createElement('div'); picker.id = 'emoji-picker';
+  picker.style.cssText = 'position:fixed;z-index:300;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;box-shadow:0 4px 24px rgba(0,0,0,.3);max-width:380px;max-height:340px;overflow-y:auto;display:grid;grid-template-columns:repeat(10,1fr);gap:3px';
+  // Die — the standout first item: picks an emoji at random.
+  const die = document.createElement('button');
+  die.textContent = '🎲'; die.title = 'Pick a random emoji';
+  die.style.cssText = 'font-size:1.5rem;padding:6px;border:2px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer;border-radius:6px;grid-column:span 2;font-weight:700;line-height:1';
+  die.onmouseenter = () => die.style.filter = 'brightness(1.1)';
+  die.onmouseleave = () => die.style.filter = 'none';
+  die.onclick = (e) => { e.preventDefault(); document.getElementById(inputId).value = randomEmoji(); picker.remove(); };
+  picker.appendChild(die);
+  EMOJI_SET.forEach(em => { const b = document.createElement('button'); b.textContent = em; b.title = em; b.style.cssText = 'font-size:1.2rem;padding:2px;border:none;background:transparent;cursor:pointer;border-radius:4px'; b.onmouseenter = () => b.style.background = 'var(--surface-hover)'; b.onmouseleave = () => b.style.background = 'transparent'; b.onclick = (e) => { e.preventDefault(); document.getElementById(inputId).value = em; picker.remove(); }; picker.appendChild(b); });
+  const rect = btn.getBoundingClientRect(); picker.style.top = (rect.bottom + 4) + 'px'; picker.style.left = rect.left + 'px'; document.body.appendChild(picker);
+  setTimeout(() => { const close = (ev) => { if (!picker.contains(ev.target) && ev.target !== btn) { picker.remove(); document.removeEventListener('click', close); } }; document.addEventListener('click', close); }, 0);
+}
 
 // ===== ADD/EDIT PERSON MODAL =====
 function showAddPersonModal(isGuest) {
@@ -793,7 +848,7 @@ async function submitAddPerson(isGuest) {
   if (!name) { toast('Name is required', 'error'); return; }
   const projects = document.getElementById('person-projects').value.split(',').map(s => s.trim()).filter(Boolean);
   const person = await API.post('/people', { name, role: document.getElementById('person-role').value.trim(), sub_team: document.getElementById('person-team').value.trim(), avatar_emoji: document.getElementById('person-emoji').value.trim() || '👤', default_projects: projects, is_guest: !!isGuest, status: 'active', archived_date: '' });
-  State.people.push(person); closeModal(); render();
+  if (!State.people.find(x => x.id === person.id)) State.people.push(person); closeModal(); render();
 }
 function showEditPersonModal(personId) {
   const p = getPerson(personId); if (!p) return;
@@ -832,7 +887,7 @@ async function submitAddProject() {
   if (!name) { toast('Name is required', 'error'); return; }
   if (getProjectByName(name)) { toast('Project already exists', 'error'); return; }
   const proj = await API.post('/projects', { name, emoji: document.getElementById('proj-emoji').value.trim() || '📁', description: document.getElementById('proj-desc').value.trim(), url: document.getElementById('proj-url').value.trim(), start_date: document.getElementById('proj-start').value.trim(), end_date: document.getElementById('proj-end').value.trim(), status: document.getElementById('proj-status').value });
-  State.projects.push(proj); closeModal(); render();
+  if (!State.projects.find(x => x.id === proj.id)) State.projects.push(proj); closeModal(); render();
 }
 function showEditProjectModal(id) {
   const proj = getProject(id); if (!proj) return;
@@ -925,6 +980,7 @@ async function copyLastWeek(personId) {
   const weeks = getVisibleWeeks(); if (weeks.length < 2) { toast('Need at least 2 weeks visible', 'error'); return; }
   const fromWS = formatWeekStart(addWeeks(weeks[0], -1)); const toWS = formatWeekStart(weeks[0]);
   if (!confirm("Copy last week's assignments? Away entries skipped.")) return;
+  pushUndo();
   const result = await API.post('/planning/copy-week', { person_id: personId, from_week_start: fromWS, to_week_start: toWS });
   await API.reloadPlanning(); render();
   if (result.copied > 0) { const s = document.getElementById('status-left'); if (s) { s.textContent = `📋 Copied ${result.copied} slots`; setTimeout(updateStatusBar, 2000); } }
@@ -932,9 +988,14 @@ async function copyLastWeek(personId) {
 }
 
 // ===== HELP =====
-function showHelp() { showModal(`<h2>Keyboard Shortcuts</h2><div class="help-shortcuts"><span><kbd>Tab</kbd></span><span>Move between cells</span><span><kbd>Enter</kbd></span><span>Open cell editor</span><span><kbd>Escape</kbd></span><span>Close editor</span><span><kbd>U</kbd></span><span>Mark undetermined</span><span><kbd>R</kbd></span><span>Toggle run</span><span><kbd>Ctrl+Z</kbd></span><span>Undo</span></div><div class="form-actions"><button onclick="closeModal()">Close</button></div>`); }
+function showHelp() { showModal(`<h2>Keyboard Shortcuts</h2><div class="help-shortcuts"><span><kbd>Tab</kbd></span><span>Move between cells</span><span><kbd>Enter</kbd></span><span>Open cell editor</span><span><kbd>←</kbd></span><span>Move timeframe back (Team / Availability)</span><span><kbd>→</kbd></span><span>Move timeframe forward (Team / Availability)</span><span><kbd>U</kbd></span><span>Mark undetermined</span><span><kbd>R</kbd></span><span>Toggle run</span><span><kbd>Ctrl+Z</kbd></span><span>Undo</span><span><kbd>Escape</kbd></span><span>Close editor / modal</span></div><div class="form-actions"><button onclick="closeModal()">Close</button></div>`); }
 
 // ===== KEYBOARD SHORTCUTS =====
+function modalOpen() {
+  const ov = document.getElementById('overlay');
+  const ce = document.getElementById('cell-editor');
+  return (ov && !ov.classList.contains('hidden')) || (ce && !ce.classList.contains('hidden'));
+}
 document.addEventListener('keydown', (e) => {
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
   if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
@@ -942,6 +1003,13 @@ document.addEventListener('keydown', (e) => {
   if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
   if (e.key === 'u' && !e.ctrlKey && editorPersonId) setUndetermined();
   if (e.key === 'r' && !e.ctrlKey && editorPersonId) { window.editorRunToggle = !window.editorRunToggle; const cb = document.getElementById('cell-editor')?.querySelector('input[type="checkbox"]'); if (cb) cb.checked = window.editorRunToggle; }
+  // Arrow keys move the timeframe in the team grid & availability views
+  if (editorPersonId || modalOpen()) return;
+  if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+    const dir = e.key === 'ArrowLeft' ? -1 : 1;
+    if (currentView === 'team') { scrollOffset += dir; API.reloadPlanning().then(render); e.preventDefault(); }
+    else if (currentView === 'availability') { availabilityDayOffset += dir; render(); e.preventDefault(); }
+  }
 });
 
 // ===== NAVIGATION =====

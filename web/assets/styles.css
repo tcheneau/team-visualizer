@@ -35,7 +35,7 @@ h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-
 .grid-table th.person-col{text-align:left;min-width:120px;position:sticky;left:0;z-index:3;background:var(--surface)}
 .grid-table td.person-col{text-align:left;min-width:120px;position:sticky;left:0;z-index:1;background:var(--bg);font-weight:500;cursor:pointer}
 .grid-table td.person-col:hover{color:var(--accent)}
-.grid-table .day-header{font-size:.7rem;white-space:nowrap}.grid-table .week-header{font-size:.7rem;white-space:nowrap}
+.grid-table .day-header{font-size:.7rem;white-space:nowrap}.grid-table .day-header .day-num{color:var(--fg-muted);font-weight:400}.grid-table .week-header{font-size:.7rem;white-space:nowrap}
 .grid-table .half-day{min-width:44px;height:22px;border-radius:2px;cursor:pointer;position:relative;flex-shrink:0;overflow:hidden;font-size:7px;line-height:1;text-align:center;user-select:none}
 .grid-table .half-day:hover{outline:2px solid var(--accent);outline-offset:-1px;z-index:1}
 .grid-table .half-day .cell-label{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;padding:1px 2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -161,6 +161,24 @@ h1{font-size:1.5rem;font-weight:700}h2{font-size:1.2rem;font-weight:600}h3{font-
 [data-theme=dracula]{--bg:#282a36;--fg:#f8f8f2;--fg-muted:#6272a4;--border:#44475a;--surface:#363849;--surface-hover:#44475a;--surface-active:#555770;--input-bg:#1e1f29;--accent:#bd93f9;--danger:#ff5555;--slot-empty:#3a3c4a;--slot-undetermined:#4a4c5a;--slot-undetermined-line:#6272a4;--slot-away:#ffb86c;--slot-project:#8be9fd;--slot-run:#ff5555}
 /* Monokai */
 [data-theme=monokai]{--bg:#272822;--fg:#f8f8f2;--fg-muted:#75715e;--border:#49483e;--surface:#3e3d32;--surface-hover:#49483e;--surface-active:#5a594e;--input-bg:#1d1e19;--accent:#a6e22e;--danger:#f92672;--slot-empty:#3a3b30;--slot-undetermined:#4a4b40;--slot-undetermined-line:#75715e;--slot-away:#fd971f;--slot-project:#66d9ef;--slot-run:#f92672}
+/* Nord */
+[data-theme=nord]{--bg:#2e3440;--fg:#d8dee9;--fg-muted:#6b7b94;--border:#3b4252;--surface:#3b4252;--surface-hover:#434c5e;--surface-active:#4c566a;--input-bg:#2e3440;--accent:#88c0d0;--danger:#bf616a;--slot-empty:#3b4252;--slot-undetermined:#434c5e;--slot-undetermined-line:#616e88;--slot-away:#d08770;--slot-project:#88c0d0;--slot-run:#bf616a}
+/* Solarized Light */
+[data-theme=solarized_light]{--bg:#fdf6e3;--fg:#586e75;--fg-muted:#93a1a1;--border:#eee8d5;--surface:#eee8d5;--surface-hover:#e6e0c8;--surface-active:#d8cfb8;--input-bg:#fdf6e3;--accent:#268bd2;--danger:#dc322f;--slot-empty:#eee8d5;--slot-undetermined:#e0dcc0;--slot-undetermined-line:#93a1a1;--slot-away:#b58900;--slot-project:#268bd2;--slot-run:#cb4b16}
+/* Solarized Dark */
+[data-theme=solarized_dark]{--bg:#002b36;--fg:#839496;--fg-muted:#586e75;--border:#073642;--surface:#073642;--surface-hover:#0b4a5a;--surface-active:#0f5a6e;--input-bg:#002b36;--accent:#268bd2;--danger:#dc322f;--slot-empty:#073642;--slot-undetermined:#0b4a5a;--slot-undetermined-line:#586e75;--slot-away:#b58900;--slot-project:#2aa198;--slot-run:#cb4b16}
+/* GitHub (light) */
+[data-theme=github]{--bg:#ffffff;--fg:#24292f;--fg-muted:#57606a;--border:#d0d7de;--surface:#f6f8fa;--surface-hover:#eaeef2;--surface-active:#d8dee4;--input-bg:#ffffff;--accent:#0969da;--danger:#cf222e;--slot-empty:#f6f8fa;--slot-undetermined:#eaeef2;--slot-undetermined-line:#8c959f;--slot-away:#bf8700;--slot-project:#0969da;--slot-run:#cf222e}
+/* GitHub Dark */
+[data-theme=github_dark]{--bg:#0d1117;--fg:#c9d1d9;--fg-muted:#8b949e;--border:#30363d;--surface:#161b22;--surface-hover:#21262d;--surface-active:#30363d;--input-bg:#0d1117;--accent:#58a6ff;--danger:#f85149;--slot-empty:#161b22;--slot-undetermined:#21262d;--slot-undetermined-line:#8b949e;--slot-away:#d29922;--slot-project:#58a6ff;--slot-run:#f85149}
+/* One Dark */
+[data-theme=one_dark]{--bg:#282c34;--fg:#abb2bf;--fg-muted:#5c6370;--border:#3b4048;--surface:#21252b;--surface-hover:#2c313a;--surface-active:#3b4048;--input-bg:#282c34;--accent:#61afef;--danger:#e06c75;--slot-empty:#21252b;--slot-undetermined:#2c313a;--slot-undetermined-line:#5c6370;--slot-away:#d19a66;--slot-project:#61afef;--slot-run:#e06c75}
+/* Gruvbox (dark) */
+[data-theme=gruvbox]{--bg:#282828;--fg:#ebdbb2;--fg-muted:#928374;--border:#3c3836;--surface:#32302f;--surface-hover:#3c3836;--surface-active:#504945;--input-bg:#1d2021;--accent:#fabd2f;--danger:#fb4934;--slot-empty:#32302f;--slot-undetermined:#3c3836;--slot-undetermined-line:#928374;--slot-away:#fe8019;--slot-project:#83a598;--slot-run:#fb4934}
+/* Tokyo Night */
+[data-theme=tokyo_night]{--bg:#1a1b26;--fg:#a9b1d6;--fg-muted:#565f89;--border:#2a2e44;--surface:#1f2335;--surface-hover:#292e42;--surface-active:#2f3550;--input-bg:#16161e;--accent:#7aa2f7;--danger:#f7768e;--slot-empty:#1f2335;--slot-undetermined:#292e42;--slot-undetermined-line:#565f89;--slot-away:#e0af68;--slot-project:#7aa2f7;--slot-run:#f7768e}
+/* Catppuccin Mocha */
+[data-theme=catppuccin]{--bg:#1e1e2e;--fg:#cdd6f4;--fg-muted:#a6adc8;--border:#313244;--surface:#181825;--surface-hover:#313244;--surface-active:#45475a;--input-bg:#11111b;--accent:#cba6f7;--danger:#f38ba8;--slot-empty:#181825;--slot-undetermined:#313244;--slot-undetermined-line:#585b70;--slot-away:#fab387;--slot-project:#89b4fa;--slot-run:#f38ba8}
 
 /* ===== PHASE 6: Loading, Toast, WS Status ===== */
 #loading{text-align:center;padding:60px;color:var(--fg-muted)}
