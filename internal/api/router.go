@@ -54,7 +54,7 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 
 	// Settings
 	mux.Get("/settings", r.getSettings)
-	mux.With(r.auth.RequireRole(model.RoleAdmin)).Put("/settings", r.updateSettings)
+	mux.Put("/settings", r.updateSettings)
 
 	// On-call & Rotation (read)
 	mux.Get("/oncall", r.getOnCall)
@@ -262,12 +262,29 @@ func (r *Router) updateSettings(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
+	user := auth.UserFromContext(req.Context())
+	isAdmin := user != nil && user.Role == model.RoleAdmin
+	// Keys any authenticated user may set (app-wide view/operational settings).
+	allRoleKeys := map[string]bool{"window_weeks": true, "run_mode": true, "run_target_persons": true}
+	// Admin-only keys. Anything outside this set is rejected for everyone.
+	adminOnlyKeys := map[string]bool{"prune_weeks": true}
+	for k := range settings {
+		if !allRoleKeys[k] && !adminOnlyKeys[k] {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown setting: " + k})
+			return
+		}
+		if adminOnlyKeys[k] && !isAdmin {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin only: " + k})
+			return
+		}
+	}
 	for k, v := range settings {
 		if err := r.db.SetSetting(k, v); err != nil {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
 	}
+	r.hub.Broadcast("settings_updated", settings)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

@@ -64,7 +64,7 @@ const State = {
   user: null, token: null,
   people: [], projects: [], planning: {}, settings: {},
   oncall: {}, rotation: {}, holidays: [],
-  scrollOffset: 0, undoStack: null, undoing: false,
+  scrollOffset: 0, undoStack: null, undoing: false, theme: null,
 };
 
 function getSlotKey(personId, date, slot) { return `${personId}|${date}|${slot}`; }
@@ -77,6 +77,7 @@ function getProject(id) { return State.projects.find(p => p.id === id); }
 function getProjectByName(name) { return State.projects.find(p => p.name.toLowerCase() === name.toLowerCase()); }
 
 const defaultSettings = { window_weeks:4, prune_weeks:12, week_starts:'monday', run_mode:'ratio', run_target_persons:3, theme:'dracula', export_counter:1 };
+const THEMES = ['dracula','monokai','light','nord','solarized_light','solarized_dark','github','github_dark','one_dark','gruvbox','tokyo_night','catppuccin'];
 
 function canEdit() { return State.user && (State.user.role === 'admin' || State.user.role === 'normal'); }
 function isAdmin() { return State.user && State.user.role === 'admin'; }
@@ -172,7 +173,7 @@ const WS = {
       case 'project_deleted': State.projects = State.projects.filter(p => p.id !== msg.data.id); break;
       case 'oncall_changed': { API.get(`/oncall?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.oncall = d || {}; render(); }); return; }
       case 'rotation_changed': { API.get(`/rotation?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.rotation = d || {}; render(); }); return; }
-      case 'settings_updated': State.settings = Object.assign({}, defaultSettings, msg.data); break;
+      case 'settings_updated': State.settings = Object.assign({}, State.settings, msg.data); break;
       case 'holidays_imported': API.get('/holidays').then(d => { State.holidays = d || []; render(); }); return;
     }
     render();
@@ -321,11 +322,11 @@ function getVisibleWeeks() {
 
 // ===== RENDER ENGINE =====
 function render() {
-  document.documentElement.setAttribute('data-theme', State.settings.theme || 'dracula');
+  document.documentElement.setAttribute('data-theme', State.theme || State.settings.theme || 'dracula');
   const main = document.getElementById('main');
   $$('.nav-btn[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === currentView));
-  // Role-based UI
-  if (!canEdit()) { $$('#btn-import').forEach(b => b.style.display = 'none'); } else { $('#btn-import').style.display = ''; }
+  // Role-based UI: the Admin tab is only visible to admins.
+  $$('.nav-btn[data-view="admin"]').forEach(b => b.style.display = isAdmin() ? '' : 'none');
   updateStatusBar();
   switch(currentView) {
     case 'team': renderTeamGrid(main); break;
@@ -336,6 +337,7 @@ function render() {
     case 'people': renderPeople(main); break;
     case 'projects': renderProjects(main); break;
     case 'settings': renderSettings(main); break;
+    case 'admin': if (isAdmin()) renderAdmin(main); else renderSettings(main); break;
     case 'individual': renderIndividual(main); break;
     default: renderTeamGrid(main);
   }
@@ -699,12 +701,26 @@ function renderSettings(container) {
   const s = State.settings;
   let html = '<h2>Settings</h2><div class="settings-grid">';
   html += `<div class="field"><label>Window weeks (≥3)</label><input type="number" min="3" value="${s.window_weeks}" onchange="API.put('/settings',{window_weeks:String(Math.max(3,+this.value))}).then(()=>{State.settings.window_weeks=Math.max(3,+this.value);render()})"></div>`;
-  html += `<div class="field"><label>Prune threshold (weeks)</label><input type="number" min="1" value="${s.prune_weeks}" onchange="API.put('/settings',{prune_weeks:String(Math.max(1,+this.value))}).then(()=>{State.settings.prune_weeks=Math.max(1,+this.value)})"></div>`;
-  if (isAdmin()) { html += `<div class="field"><label>Run mode</label><select onchange="API.put('/settings',{run_mode:this.value}).then(()=>{State.settings.run_mode=this.value;render()})"><option value="ratio" ${s.run_mode==='ratio'?'selected':''}>Ratio</option><option value="rotation" ${s.run_mode==='rotation'?'selected':''}>Rotation</option></select></div>`;
-    html += `<div class="field"><label>Run target (persons)</label><input type="number" min="0" value="${s.run_target_persons}" onchange="API.put('/settings',{run_target_persons:String(+this.value)}).then(()=>{State.settings.run_target_persons=+this.value;render()})"></div>`; }
-  html += `<div class="field"><label>Theme</label><select onchange="API.put('/settings',{theme:this.value}).then(()=>{State.settings.theme=this.value;render()})">${['dracula','monokai','light','nord','solarized_light','solarized_dark','github','github_dark','one_dark','gruvbox','tokyo_night','catppuccin'].map(t=>`<option value="${t}" ${s.theme===t?'selected':''}>${t.split('_').map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ')}</option>`).join('')}</select></div>`;
+  html += `<div class="field"><label>Run mode</label><select onchange="API.put('/settings',{run_mode:this.value}).then(()=>{State.settings.run_mode=this.value;render()})"><option value="ratio" ${s.run_mode==='ratio'?'selected':''}>Ratio</option><option value="rotation" ${s.run_mode==='rotation'?'selected':''}>Rotation</option></select></div>`;
+  html += `<div class="field"><label>Run target (persons)</label><input type="number" min="0" value="${s.run_target_persons}" onchange="API.put('/settings',{run_target_persons:String(+this.value)}).then(()=>{State.settings.run_target_persons=+this.value;render()})"></div>`;
+  html += `<div class="field"><label>Theme</label><select onchange="State.theme=this.value; localStorage.setItem('teamviz_theme',this.value); render()">${THEMES.map(t=>`<option value="${t}" ${State.theme===t?'selected':''}>${t.split('_').map(w=>w.charAt(0).toUpperCase()+w.slice(1)).join(' ')}</option>`).join('')}</select></div>`;
   html += '</div>';
-  if (isAdmin()) html += '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap"><button onclick="if(confirm(\'Prune old data?\')){API.post(\'/planning/prune\',{}).then(r=>{alert(\'Pruned \'+r.deleted+\' entries\');API.reloadPlanning().then(render)})}">🧹 Prune Old Data</button><button class="danger" onclick="if(confirm(\'Reset ALL data?\')){API.post(\'/reset\',{}).then(()=>{API.loadAll().then(render)})}">⚠️ Reset All Data</button></div>';
+  html += '<p style="margin-top:12px;color:var(--fg-muted);font-size:.8rem">Theme is stored in your browser only; the rest apply app-wide.</p>';
+  container.innerHTML = html;
+}
+
+// ===== ADMIN VIEW (admin only) =====
+function renderAdmin(container) {
+  const s = State.settings;
+  let html = '<h2>Admin</h2><div class="settings-grid">';
+  html += `<div class="field"><label>Prune threshold (weeks)</label><input type="number" min="1" value="${s.prune_weeks}" onchange="API.put('/settings',{prune_weeks:String(Math.max(1,+this.value))}).then(()=>{State.settings.prune_weeks=Math.max(1,+this.value)})"></div>`;
+  html += '</div>';
+  html += '<div style="margin-top:16px;display:flex;gap:8px;flex-wrap:wrap">';
+  html += `<button onclick="if(confirm('Prune old data?')){API.post('/planning/prune',{}).then(r=>{alert('Pruned '+r.deleted+' entries');API.reloadPlanning().then(render)})}">🧹 Prune Old Data</button>`;
+  html += `<button class="danger" onclick="if(confirm('Reset ALL data?')){API.post('/reset',{}).then(()=>{API.loadAll().then(render)})}">⚠️ Reset All Data</button>`;
+  html += `<button onclick="showImportModal()">⬆ Import TOML</button>`;
+  html += '</div>';
+  html += '<p style="margin-top:12px;color:var(--fg-muted);font-size:.8rem">Import replaces/plans data and can wipe the database — admin only.</p>';
   container.innerHTML = html;
 }
 
@@ -1027,8 +1043,8 @@ document.addEventListener('keydown', (e) => {
 function initNav() {
   $$('.nav-btn[data-view]').forEach(btn => btn.addEventListener('click', () => { currentView = btn.dataset.view; currentPersonId = null; render(); }));
   document.getElementById('overlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
-  if (canEdit()) { document.getElementById('btn-undo').addEventListener('click', undo); document.getElementById('btn-import').addEventListener('click', showImportModal); }
-  else { document.getElementById('btn-undo').style.display = 'none'; document.getElementById('btn-import').style.display = 'none'; }
+  if (canEdit()) { document.getElementById('btn-undo').addEventListener('click', undo); }
+  else { document.getElementById('btn-undo').style.display = 'none'; }
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-export').addEventListener('click', doExport);
   document.getElementById('btn-help').addEventListener('click', showHelp);
@@ -1094,6 +1110,7 @@ async function init() {
     document.getElementById('topbar').classList.remove('hidden');
     document.getElementById('user-info').textContent = `${State.user.username} (${State.user.role})`;
     await API.loadAll();
+    State.theme = localStorage.getItem('teamviz_theme') || State.settings.theme || 'dracula';
     initNav();
     WS.connect();
     updateWSStatus('reconnecting');
