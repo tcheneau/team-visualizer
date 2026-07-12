@@ -1,9 +1,14 @@
 package api
 
 import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -62,6 +67,21 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 
 	// Holidays (read)
 	mux.Get("/holidays", r.listHolidays)
+
+	// Activity (read) — any role
+	mux.Get("/activity", r.listActivity)
+
+	// Me / person mapping — any role
+	mux.Get("/me/person", r.getMyPerson)
+	mux.Put("/me/person", r.setMyPerson)
+
+	// Users (admin)
+	mux.With(r.auth.RequireRole(model.RoleAdmin)).Get("/users", r.listUsers)
+	mux.With(r.auth.RequireRole(model.RoleAdmin)).Put("/users/{id}/person", r.setUserPerson)
+
+	// ICS token management (admin)
+	mux.With(r.auth.RequireRole(model.RoleAdmin)).Post("/people/{id}/ics-token", r.generateICSToken)
+	mux.With(r.auth.RequireRole(model.RoleAdmin)).Delete("/people/{id}/ics-token", r.revokeICSToken)
 
 	// WebSocket (real-time updates)
 	mux.Get("/ws", r.handleWS)
@@ -267,7 +287,7 @@ func (r *Router) updateSettings(w http.ResponseWriter, req *http.Request) {
 	// Keys any authenticated user may set (app-wide view/operational settings).
 	allRoleKeys := map[string]bool{"window_weeks": true, "run_mode": true, "run_target_persons": true}
 	// Admin-only keys. Anything outside this set is rejected for everyone.
-	adminOnlyKeys := map[string]bool{"prune_weeks": true}
+	adminOnlyKeys := map[string]bool{"prune_weeks": true, "holiday_country": true}
 	for k := range settings {
 		if !allRoleKeys[k] && !adminOnlyKeys[k] {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unknown setting: " + k})
@@ -285,6 +305,11 @@ func (r *Router) updateSettings(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	r.hub.Broadcast("settings_updated", settings)
+	keys := make([]string, 0, len(settings))
+	for k := range settings {
+		keys = append(keys, k)
+	}
+	r.recordEvent(req.Context(), "settings_update", strings.Join(keys, ","), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -392,7 +417,256 @@ func (r *Router) handleWS(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	r.hub.ServeWS(w, req, user.Username, string(user.Role))
+	personID, _ := r.db.GetUserPerson(user.Username)
+	r.hub.ServeWS(w, req, user.Username, string(user.Role), personID)
+}
+
+// ===== Activity =====
+
+func (r *Router) listActivity(w http.ResponseWriter, req *http.Request) {
+	limitStr := req.URL.Query().Get("limit")
+	limit := 50
+	if limitStr != "" {
+		if n, err := strconv.Atoi(limitStr); err == nil && n > 0 {
+			limit = n
+		}
+	}
+	events, err := r.db.ListEvents(limit)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if events == nil {
+		events = []store.ActivityEvent{}
+	}
+	writeJSON(w, http.StatusOK, events)
+}
+
+// ===== Me / Person Mapping =====
+
+func (r *Router) getMyPerson(w http.ResponseWriter, req *http.Request) {
+	user := auth.UserFromContext(req.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	personID, err := r.db.GetUserPerson(user.Username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"person_id": personID})
+}
+
+func (r *Router) setMyPerson(w http.ResponseWriter, req *http.Request) {
+	user := auth.UserFromContext(req.Context())
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "unauthorized"})
+		return
+	}
+	var body struct {
+		PersonID string `json:"person_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if err := r.db.SetUserPerson(user.Username, body.PersonID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"person_id": body.PersonID})
+}
+
+// ===== Users (admin) =====
+
+func (r *Router) listUsers(w http.ResponseWriter, req *http.Request) {
+	users, err := r.db.ListUsers()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if users == nil {
+		users = []store.UserRow{}
+	}
+	writeJSON(w, http.StatusOK, users)
+}
+
+func (r *Router) setUserPerson(w http.ResponseWriter, req *http.Request) {
+	idStr := chi.URLParam(req, "id")
+	userID, err := strconv.ParseInt(idStr, 10, 64)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid user id"})
+		return
+	}
+	var body struct {
+		PersonID string `json:"person_id"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
+		return
+	}
+	if err := r.db.SetUserPersonByID(userID, body.PersonID); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"person_id": body.PersonID})
+}
+
+// ===== ICS Token (admin) =====
+
+func (r *Router) generateICSToken(w http.ResponseWriter, req *http.Request) {
+	id := chi.URLParam(req, "id")
+	// Generate a random 48-char hex token
+	tokenBytes := make([]byte, 24)
+	if _, err := rand.Read(tokenBytes); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
+		return
+	}
+	token := hex.EncodeToString(tokenBytes)
+	if err := r.db.SetPersonICSToken(id, token); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Broadcast person_updated so clients refresh ics_token
+	if p, _ := r.db.GetPerson(id); p != nil {
+		r.hub.Broadcast("person_updated", p)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{
+		"token": token,
+		"url":   "/api/ics/public/" + token,
+	})
+}
+
+func (r *Router) revokeICSToken(w http.ResponseWriter, req *http.Request) {
+	id := chi.URLParam(req, "id")
+	if err := r.db.ClearPersonICSToken(id); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	// Broadcast person_updated so clients refresh ics_token
+	if p, _ := r.db.GetPerson(id); p != nil {
+		r.hub.Broadcast("person_updated", p)
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "revoked"})
+}
+
+// ===== Public ICS Feed (no auth, mounted in main.go) =====
+
+func (r *Router) ServePublicICS(w http.ResponseWriter, req *http.Request) {
+	token := chi.URLParam(req, "token")
+	if token == "" {
+		http.Error(w, "missing token", http.StatusBadRequest)
+		return
+	}
+	person, err := r.db.GetPersonByICSToken(token)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+	if person == nil {
+		http.Error(w, "not found", http.StatusNotFound)
+		return
+	}
+
+	// Build ICS for a range: 4 weeks back to 12 weeks forward
+	now := time.Now()
+	start := now.AddDate(0, 0, -28) // ~4 weeks back
+	end := now.AddDate(0, 0, 84)    // ~12 weeks forward
+	startStr := start.Format("2006/01/02")
+	endStr := end.Format("2006/01/02")
+
+	entries, err := r.db.GetPlanningForPerson(person.ID, startStr, endStr)
+	if err != nil {
+		http.Error(w, "server error", http.StatusInternalServerError)
+		return
+	}
+
+	var ics strings.Builder
+	ics.WriteString("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamVisualizer//ICS//EN\r\n")
+
+	for _, e := range entries {
+		dt, _ := time.Parse("2006/01/02", e.Date)
+		amStart := time.Date(dt.Year(), dt.Month(), dt.Day(), 9, 0, 0, 0, time.UTC)
+		amEnd := time.Date(dt.Year(), dt.Month(), dt.Day(), 13, 0, 0, 0, time.UTC)
+		pmStart := time.Date(dt.Year(), dt.Month(), dt.Day(), 14, 0, 0, 0, time.UTC)
+		pmEnd := time.Date(dt.Year(), dt.Month(), dt.Day(), 18, 0, 0, 0, time.UTC)
+
+		var startTime, endTime time.Time
+		if e.Slot == "am" {
+			startTime, endTime = amStart, amEnd
+		} else {
+			startTime, endTime = pmStart, pmEnd
+		}
+
+		uid := fmt.Sprintf("%s-%s-%s@teamviz", person.ID, e.Date, e.Slot)
+		dtStamp := now.Format("20060102T150405Z")
+		dtStart := startTime.Format("20060102T150405Z")
+		dtEnd := endTime.Format("20060102T150405Z")
+
+		var summary, description string
+		if e.Data.State == "undetermined" {
+			summary = "Project: undetermined"
+		} else if e.Data.Away != nil {
+			summary = "Away: " + e.Data.Away.Type
+			description = e.Data.Away.Note
+		} else if len(e.Data.Projects) > 0 {
+			names := make([]string, 0, len(e.Data.Projects))
+			for _, p := range e.Data.Projects {
+				names = append(names, p.Name)
+			}
+			summary = "Project: " + strings.Join(names, ", ")
+			if e.Data.Run {
+				summary += " + Run"
+			}
+		} else if e.Data.Run {
+			summary = "Run duty"
+		} else {
+			continue
+		}
+
+		ics.WriteString(fmt.Sprintf("BEGIN:VEVENT\r\nUID:%s\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n",
+			uid, dtStamp, dtStart, dtEnd, icsEscape(summary)))
+		if description != "" {
+			ics.WriteString("DESCRIPTION:" + icsEscape(description) + "\r\n")
+		}
+		ics.WriteString("END:VEVENT\r\n")
+	}
+
+	ics.WriteString("END:VCALENDAR\r\n")
+
+	w.Header().Set("Content-Type", "text/calendar; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte(ics.String()))
+}
+
+func icsEscape(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, ",", "\\,")
+	s = strings.ReplaceAll(s, ";", "\\;")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "")
+	return s
+}
+
+// recordEvent logs an audit event and broadcasts it via WebSocket.
+func (r *Router) recordEvent(ctx context.Context, action, target, detail string) {
+	actor := ""
+	if user := auth.UserFromContext(ctx); user != nil {
+		actor = user.Username
+	}
+	if err := r.db.RecordEvent(actor, action, target, detail); err != nil {
+		// Log but don't fail the request
+		return
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	r.hub.Broadcast("activity_new", map[string]string{
+		"actor":  actor,
+		"action": action,
+		"target": target,
+		"detail": detail,
+		"ts":     now,
+	})
 }
 
 // ===== Helpers =====

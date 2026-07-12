@@ -9,7 +9,6 @@
 <body>
 <div id="app">
   <div id="topbar" class="hidden">
-    <span class="logo">📊 Team Visualizer</span>
     <button class="nav-btn active" data-view="team">Team Grid</button>
     <button class="nav-btn" data-view="availability">Availability</button>
     <button class="nav-btn" data-view="run">Run Coverage</button>
@@ -17,14 +16,21 @@
     <button class="nav-btn" data-view="archived">Archived</button>
     <button class="nav-btn" data-view="people">People</button>
     <button class="nav-btn" data-view="projects">Projects</button>
-    <button class="nav-btn" data-view="settings">Settings</button>
     <button class="nav-btn" data-view="admin">Admin</button>
+    <button class="nav-btn" data-view="workload">Workload</button>
+    <button class="nav-btn" data-view="activity">Activity</button>
+    <button class="nav-btn" data-view="myweek">My Week</button>
+    <button class="nav-btn" data-view="users">Users</button>
+    <button class="nav-btn" data-view="settings">Settings</button>
     <span class="spacer"></span>
     <span class="topbar-right">
       <span id="ws-status" title="WebSocket connection" style="font-size:.8rem;cursor:default">●</span>
       <button id="btn-undo" title="Undo (Ctrl+Z)" disabled>↩ Undo</button>
+      <button id="btn-redo" title="Redo (Ctrl+Shift+Z)" disabled>↩ Redo</button>
       <button id="btn-export" title="Export TOML">⬇ Export</button>
       <button id="btn-help" title="Help">❓</button>
+      <span id="presence" style="display:flex;gap:2px;align-items:center;margin-left:6px"></span>
+      <span id="me-picker" style="margin-left:6px"></span>
       <span id="user-info" style="font-size:.8rem;color:var(--fg-muted);margin-left:8px"></span>
       <button id="btn-logout" title="Sign out / switch user">⏻ Sign out</button>
     </span>

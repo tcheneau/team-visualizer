@@ -11,7 +11,7 @@ import (
 // ===== People =====
 
 func (s *Store) ListPeople() ([]model.Person, error) {
-	rows, err := s.db.Query(`SELECT id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest FROM people ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest, ics_token FROM people ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -29,7 +29,7 @@ func (s *Store) ListPeople() ([]model.Person, error) {
 }
 
 func (s *Store) GetPerson(id string) (*model.Person, error) {
-	row := s.db.QueryRow(`SELECT id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest FROM people WHERE id = ?`, id)
+	row := s.db.QueryRow(`SELECT id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest, ics_token FROM people WHERE id = ?`, id)
 	p, err := scanPerson(row)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -44,7 +44,7 @@ func scanPerson(r interface{ Scan(...any) error }) (model.Person, error) {
 	var p model.Person
 	var projectsJSON string
 	var isGuest int
-	err := r.Scan(&p.ID, &p.Name, &p.Role, &p.SubTeam, &p.AvatarEmoji, &p.AvatarColor, &p.StartDate, &projectsJSON, &p.Status, &p.ArchivedDate, &isGuest)
+	err := r.Scan(&p.ID, &p.Name, &p.Role, &p.SubTeam, &p.AvatarEmoji, &p.AvatarColor, &p.StartDate, &projectsJSON, &p.Status, &p.ArchivedDate, &isGuest, &p.ICS_TOKEN)
 	if err != nil {
 		return p, err
 	}
@@ -59,7 +59,7 @@ func scanPerson(r interface{ Scan(...any) error }) (model.Person, error) {
 
 func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote
 		FROM planning
 		WHERE date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY person_id, date, slot`, startDate, endDate)
@@ -72,8 +72,8 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON string
-		var run int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON)
+		var run, remote int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote)
 		if err != nil {
 			return nil, err
 		}
@@ -81,6 +81,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
 		}
 		e.Data.Run = run != 0
+		e.Data.Remote = remote != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
 			if err := json.Unmarshal([]byte(projectsJSON), &e.Data.Projects); err != nil {
 				return nil, fmt.Errorf("scan planning projects: %w", err)
@@ -94,7 +95,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 // GetPlanningForPerson returns all planning entries for a specific person in a date range.
 func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote
 		FROM planning
 		WHERE person_id = ? AND date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY date, slot`, personID, startDate, endDate)
@@ -107,8 +108,8 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON string
-		var run int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON)
+		var run, remote int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote)
 		if err != nil {
 			return nil, err
 		}
@@ -116,6 +117,7 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
 		}
 		e.Data.Run = run != 0
+		e.Data.Remote = remote != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
 			if err := json.Unmarshal([]byte(projectsJSON), &e.Data.Projects); err != nil {
 				return nil, fmt.Errorf("scan person planning projects: %w", err)
@@ -129,7 +131,7 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 // ===== Projects =====
 
 func (s *Store) ListProjects() ([]model.Project, error) {
-	rows, err := s.db.Query(`SELECT id, name, emoji, description, url, start_date, end_date, status FROM projects ORDER BY name`)
+	rows, err := s.db.Query(`SELECT id, name, emoji, description, url, start_date, end_date, status, team_lead FROM projects ORDER BY name`)
 	if err != nil {
 		return nil, err
 	}
@@ -138,7 +140,7 @@ func (s *Store) ListProjects() ([]model.Project, error) {
 	var projects []model.Project
 	for rows.Next() {
 		var p model.Project
-		if err := rows.Scan(&p.ID, &p.Name, &p.Emoji, &p.Description, &p.URL, &p.StartDate, &p.EndDate, &p.Status); err != nil {
+		if err := rows.Scan(&p.ID, &p.Name, &p.Emoji, &p.Description, &p.URL, &p.StartDate, &p.EndDate, &p.Status, &p.TeamLead); err != nil {
 			return nil, err
 		}
 		projects = append(projects, p)
@@ -148,8 +150,8 @@ func (s *Store) ListProjects() ([]model.Project, error) {
 
 func (s *Store) GetProject(id string) (*model.Project, error) {
 	var p model.Project
-	err := s.db.QueryRow(`SELECT id, name, emoji, description, url, start_date, end_date, status FROM projects WHERE id = ?`, id).
-		Scan(&p.ID, &p.Name, &p.Emoji, &p.Description, &p.URL, &p.StartDate, &p.EndDate, &p.Status)
+	err := s.db.QueryRow(`SELECT id, name, emoji, description, url, start_date, end_date, status, team_lead FROM projects WHERE id = ?`, id).
+		Scan(&p.ID, &p.Name, &p.Emoji, &p.Description, &p.URL, &p.StartDate, &p.EndDate, &p.Status, &p.TeamLead)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -293,6 +295,7 @@ type ExportPlanning struct {
 	AwayType string                `toml:"away_type"`
 	AwayNote string                `toml:"away_note"`
 	Run      bool                  `toml:"run"`
+	Remote   bool                  `toml:"remote"`
 	Projects []model.ProjectAssign `toml:"projects"`
 }
 
@@ -350,7 +353,7 @@ func (s *Store) GetExportData() (*ExportData, error) {
 		exportPlanning = append(exportPlanning, ExportPlanning{
 			PersonID: e.PersonID, Date: e.Date, Slot: e.Slot,
 			State: e.Data.State, AwayType: awayType, AwayNote: awayNote,
-			Run: e.Data.Run, Projects: projs,
+			Run: e.Data.Run, Remote: e.Data.Remote, Projects: projs,
 		})
 	}
 

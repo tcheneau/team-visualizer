@@ -64,7 +64,7 @@ const State = {
   user: null, token: null,
   people: [], projects: [], planning: {}, settings: {},
   oncall: {}, rotation: {}, holidays: [],
-  scrollOffset: 0, undoStack: null, undoing: false, theme: null,
+  scrollOffset: 0, undoStack: null, undoing: false, theme: null, presence: [], myPersonId: '',
 };
 
 function getSlotKey(personId, date, slot) { return `${personId}|${date}|${slot}`; }
@@ -175,27 +175,34 @@ const WS = {
       case 'rotation_changed': { API.get(`/rotation?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.rotation = d || {}; render(); }); return; }
       case 'settings_updated': State.settings = Object.assign({}, State.settings, msg.data); break;
       case 'holidays_imported': API.get('/holidays').then(d => { State.holidays = d || []; render(); }); return;
+      case 'presence': State.presence = msg.data || []; renderPresence(); break;
+      case 'activity_new': { if (!Array.isArray(State.activity)) State.activity=[]; State.activity.unshift(msg.data); if (State.activity.length>100) State.activity.pop(); if (currentView==='activity') render(); break; }
     }
     render();
   },
 };
 
-// ===== UNDO (single-level, client-side) =====
-// Single-level undo for planning edits. pushUndo() snapshots the whole
-// planning map before a change; undo() diffs that snapshot against the
-// current state and writes each changed slot back to the server — so the
-// revert is real (persists across refresh / other clients), not just visual.
+// ===== UNDO / REDO (multi-level, depth 20) =====
 function pushUndo(keys) {
-  State.undoStack = {};
-  (keys && keys.length ? keys : Object.keys(State.planning)).forEach(k => State.undoStack[k] = State.planning[k] ? clone(State.planning[k]) : null);
-  const b = $('btn-undo'); if (b) b.disabled = false;
+  const snap = {};
+  (keys && keys.length ? keys : Object.keys(State.planning)).forEach(k => snap[k] = State.planning[k] ? clone(State.planning[k]) : null);
+  if (!Array.isArray(State.undoStack)) State.undoStack = [];
+  State.undoStack.push(snap);
+  if (State.undoStack.length > 20) State.undoStack.shift();
+  State.redoStack = [];
+  const b = $('#btn-undo'); if (b) b.disabled = false;
+  const br = $('#btn-redo'); if (br) br.disabled = true;
 }
 async function undo() {
-  if (!State.undoStack) return;
-  const snap = State.undoStack; State.undoStack = null;
-  const b = $('btn-undo'); if (b) b.disabled = true;
-  // Suppress WS planning echoes while reverting, so a racing echo of the
-  // edit being undone can't re-apply it over our authoritative reload.
+  if (!Array.isArray(State.undoStack) || State.undoStack.length === 0) return;
+  const snap = State.undoStack.pop();
+  // Push current state of those keys onto redo stack
+  const redoSnap = {};
+  Object.keys(snap).forEach(k => redoSnap[k] = State.planning[k] ? clone(State.planning[k]) : null);
+  if (!Array.isArray(State.redoStack)) State.redoStack = [];
+  State.redoStack.push(redoSnap);
+  const b = $('#btn-undo'); if (b) b.disabled = State.undoStack.length === 0;
+  const br = $('#btn-redo'); if (br) br.disabled = false;
   State.undoing = true;
   try {
     const writes = [];
@@ -206,9 +213,36 @@ async function undo() {
       if (prev === null) writes.push(API.del('/planning/slot', { person_id: pid, date, slot }));
       else writes.push(API.put('/planning/slot', { person_id: pid, date, slot, data: prev }));
     });
-    if (writes.length === 0) return;
+    if (writes.length === 0) { State.undoing = false; return; }
     await Promise.all(writes);
-    await API.reloadPlanning(); // sync local state to the authoritative server state
+    await API.reloadPlanning();
+  } finally {
+    State.undoing = false;
+  }
+  render();
+}
+async function redo() {
+  if (!Array.isArray(State.redoStack) || State.redoStack.length === 0) return;
+  const snap = State.redoStack.pop();
+  const undoSnap = {};
+  Object.keys(snap).forEach(k => undoSnap[k] = State.planning[k] ? clone(State.planning[k]) : null);
+  if (!Array.isArray(State.undoStack)) State.undoStack = [];
+  State.undoStack.push(undoSnap);
+  const b = $('#btn-undo'); if (b) b.disabled = false;
+  const br = $('#btn-redo'); if (br) br.disabled = State.redoStack.length === 0;
+  State.undoing = true;
+  try {
+    const writes = [];
+    Object.keys(snap).forEach(k => {
+      const prev = snap[k], cur = State.planning[k] || null;
+      if (JSON.stringify(prev) === JSON.stringify(cur)) return;
+      const [pid, date, slot] = k.split('|');
+      if (prev === null) writes.push(API.del('/planning/slot', { person_id: pid, date, slot }));
+      else writes.push(API.put('/planning/slot', { person_id: pid, date, slot, data: prev }));
+    });
+    if (writes.length === 0) { State.undoing = false; return; }
+    await Promise.all(writes);
+    await API.reloadPlanning();
   } finally {
     State.undoing = false;
   }
@@ -218,21 +252,23 @@ async function undo() {
 // ===== SLOT HELPERS =====
 function getSlotClass(slotData) {
   if (!slotData || slotData.state === 'not_filled') return 'not-filled';
-  if (slotData.state === 'undetermined') return 'undetermined';
-  if (slotData.away) return 'away';
-  if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run';
-  if (slotData.run) return 'run';
-  if (slotData.projects && slotData.projects.length > 0) return 'project';
+  if (slotData.state === 'undetermined') { let cls = 'undetermined'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (slotData.away) { let cls = 'away'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (slotData.run && slotData.projects && slotData.projects.length > 0) { let cls = 'project run'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (slotData.run) { let cls = 'run'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (slotData.projects && slotData.projects.length > 0) { let cls = 'project'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (slotData.remote) return 'not-filled remote';
   return 'not-filled';
 }
 function getCellLabel(slotData) {
   if (!slotData || slotData.state === 'not_filled') return '?';
-  if (slotData.state === 'undetermined') return '?';
-  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return a[slotData.away.type] || slotData.away.type; }
+  if (slotData.state === 'undetermined') return (slotData.remote ? '🏠?' : '?');
+  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return (slotData.remote ? '🏠' : '') + (a[slotData.away.type] || slotData.away.type); }
   let parts = [];
+  if (slotData.remote) parts.push('🏠');
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
   if (slotData.run) parts.push('R');
-  return parts.join('+');
+  return parts.join('/');
 }
 function getMergeKey(slotData, weekIndex) {
   const wk = 'w' + weekIndex + ':';
@@ -249,20 +285,30 @@ function getSlotTitle(person, dateStr, slot, slotData) {
   const name = p ? p.name : person;
   if (!slotData || slotData.state === 'not_filled') return `${name} · ${dateStr} ${slot} · Not filled`;
   if (slotData.state === 'undetermined') return `${name} · ${dateStr} ${slot} · Undetermined project`;
-  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}`;
+  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}${slotData.remote ? ' + Remote' : ''}`;
   let parts = [];
   if (slotData.projects) slotData.projects.forEach(p => parts.push(`${p.name} ${p.pct}%`));
   if (slotData.run) parts.push('Run');
+  if (slotData.remote) parts.push('Remote');
   return `${name} · ${dateStr} ${slot} · ${parts.join(' + ')}`;
 }
 function getSlotLabel(slotData) {
   if (!slotData || slotData.state === 'not_filled') return '—';
-  if (slotData.state === 'undetermined') return '?';
-  if (slotData.away) return slotData.away.type.replace(/_/g,' ');
+  if (slotData.state === 'undetermined') return (slotData.remote ? '🏠?' : '?');
+  if (slotData.away) return (slotData.remote ? '🏠 ' : '') + slotData.away.type.replace(/_/g,' ');
   let parts = [];
+  if (slotData.remote) parts.push('🏠');
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
   if (slotData.run) parts.push('🏃');
   return parts.join(' ') || '—';
+}
+
+// ===== HOLIDAY HELPER =====
+function isHoliday(dateStr) {
+  const country = State.settings.holiday_country;
+  if (!country) return null;
+  const h = State.holidays.find(h => h.date === dateStr && h.country === country);
+  return h ? h.label : null;
 }
 
 // ===== ON-CALL / ROTATION =====
@@ -293,6 +339,7 @@ function calcRunCoveragePerSlot(weekStart) {
   days.forEach((d, di) => {
     if (di >= 5 && !_showWeekend) return;
     const ds = fmtDate(d);
+    if (isHoliday(ds)) return; // skip holiday days from coverage
     const dr = { dayName: dayNames[di], date: ds, am: {onRun:0,away:0,avail:0}, pm: {onRun:0,away:0,avail:0} };
     ['am','pm'].forEach(slot => {
       people.forEach(p => { const sd = getSlot(p.id, ds, slot);
@@ -312,6 +359,26 @@ let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name',
 let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeProjCount = 1;
 let editorPersonId = null, editorDate = null, editorSlot = null;
 let _showWeekend = false;
+let teamFilter = '';
+
+// Persistent view prefs (localStorage)
+const PREFS_KEYS = ['scrollOffset','teamGroupBy','_showWeekend','teamShowGuests','currentView','availabilityDayOffset','teamFilter'];
+function loadPrefs() {
+  PREFS_KEYS.forEach(k => {
+    const v = localStorage.getItem('teamviz_'+k);
+    if (v !== null) {
+      if (k === '_showWeekend' || k === 'teamShowGuests') window[k] = v === 'true';
+      else if (k === 'scrollOffset' || k === 'availabilityDayOffset') window[k] = parseInt(v,10) || 0;
+      else window[k] = v;
+    }
+  });
+}
+function savePrefs() {
+  PREFS_KEYS.forEach(k => {
+    const v = window[k];
+    localStorage.setItem('teamviz_'+k, String(v));
+  });
+}
 
 function getVisibleWeeks() {
   const n = State.settings.window_weeks || 4;
@@ -320,13 +387,24 @@ function getVisibleWeeks() {
   return weeks;
 }
 
+function jumpToDate(val) {
+  if (!val) return;
+  const d = new Date(val + 'T00:00:00');
+  const targetWS = getWeekStart(d);
+  const currentWS = getWeekStart(new Date());
+  const diffWeeks = Math.round((targetWS - currentWS) / (7 * 86400000));
+  scrollOffset = diffWeeks;
+  savePrefs();
+  API.reloadPlanning().then(render);
+}
+
 // ===== RENDER ENGINE =====
 function render() {
   document.documentElement.setAttribute('data-theme', State.theme || State.settings.theme || 'dracula');
   const main = document.getElementById('main');
   $$('.nav-btn[data-view]').forEach(btn => btn.classList.toggle('active', btn.dataset.view === currentView));
-  // Role-based UI: the Admin tab is only visible to admins.
-  $$('.nav-btn[data-view="admin"]').forEach(b => b.style.display = isAdmin() ? '' : 'none');
+  // Role-based UI: the Admin and Users tabs are only visible to admins.
+  $$('.nav-btn[data-view="admin"],.nav-btn[data-view="users"]').forEach(b => b.style.display = isAdmin() ? '' : 'none');
   updateStatusBar();
   switch(currentView) {
     case 'team': renderTeamGrid(main); break;
@@ -338,16 +416,55 @@ function render() {
     case 'projects': renderProjects(main); break;
     case 'settings': renderSettings(main); break;
     case 'admin': if (isAdmin()) renderAdmin(main); else renderSettings(main); break;
-    case 'individual': renderIndividual(main); break;
+    case 'workload': renderWorkload(main); break;
+    case 'activity': renderActivity(main); break;
+    case 'myweek': renderMyWeek(main); break;
+    case 'users': if (isAdmin()) renderUsers(main); else renderSettings(main); break;
     default: renderTeamGrid(main);
   }
+  renderPresence();
+  renderMePicker();
 }
 
 function updateStatusBar() {
   const left = document.getElementById('status-left');
   const right = document.getElementById('status-right');
   left.textContent = `${getActivePeople().length} team · ${getActiveGuests().length} guests · ${getArchivedPeople().length} archived`;
-  right.textContent = `Week ${getWeekNumber(new Date())} · ${fmtDate(new Date())}`;
+  // Coverage shortfall badge
+  const weeks = getVisibleWeeks();
+  const runTarget = State.settings.run_target_persons || 3;
+  let totalBelow = 0;
+  weeks.forEach(w => {
+    const coverage = calcRunCoveragePerSlot(formatWeekStart(w));
+    coverage.forEach(day => { ['am','pm'].forEach(slot => { if (day[slot].onRun < runTarget) totalBelow++; }); });
+  });
+  right.textContent = `Week ${getWeekNumber(new Date())} · ${fmtDate(new Date())}${totalBelow > 0 ? ` ⚠ ${totalBelow} slots below run target` : ''}`;
+}
+
+// ===== PRESENCE AVATARS =====
+function renderPresence() {
+  const el = document.getElementById('presence');
+  if (!el) return;
+  const max = 8;
+  const users = (State.presence || []).slice(0, max);
+  el.innerHTML = users.map(u => {
+    const p = u.person_id ? getPerson(u.person_id) : null;
+    const emoji = p ? p.avatar_emoji : '👤';
+    const personName = p ? ' — ' + p.name : '';
+    return `<span class="pv-badge" title="${esc(u.username)} (${u.role})${esc(personName)}">${emoji}</span>`;
+  }).join('') + (State.presence.length > max ? `<span class="pv-badge" title="${State.presence.length - max} more">+${State.presence.length - max}</span>` : '');
+}
+
+// ===== ME PICKER =====
+function renderMePicker() {
+  const el = document.getElementById('me-picker');
+  if (!el) return;
+  const people = getActivePeople();
+  let html = '<select onchange="API.put(\'/me/person\',{person_id:this.value}).then(()=>{State.myPersonId=this.value;render()})" style="font-size:.75rem;width:auto;max-width:120px">';
+  html += '<option value="">I am…</option>';
+  people.forEach(p => html += `<option value="${p.id}" ${State.myPersonId === p.id ? 'selected' : ''}>${esc(p.name)}</option>`);
+  html += '</select>';
+  el.innerHTML = html;
 }
 
 // ===== DATE PICKER HELPER =====
@@ -368,7 +485,7 @@ function renderTeamGrid(container) {
   weeks.forEach((w, wi) => { const ws = formatWeekStart(w); const wn = getWeekNumber(w); const sep = wi > 0 ? ' week-start' : ''; html += `<th colspan="${slotsPerWeek}" class="${sep}">W${wn} ${ws.slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; html += `<th colspan="2" class="day-header${sep}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span></th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" class="day-header${sep}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; });
   });
   html += '</tr></thead><tbody>';
   // Build allSlots
@@ -377,6 +494,25 @@ function renderTeamGrid(container) {
   // Sort + group. Guests are always grouped together at the end; under a
   // "Guests" sub-team when grouping by sub-team.
   let peopleSorted = people.slice();
+  // Apply filter
+  if (teamFilter) {
+    const f = teamFilter.toLowerCase();
+    peopleSorted = peopleSorted.filter(p => {
+      if (p.name.toLowerCase().includes(f)) return true;
+      if ((p.sub_team||'').toLowerCase().includes(f)) return true;
+      // Check if any project in visible weeks matches
+      for (const w of weeks) {
+        const days = getWeekDays(w);
+        for (const d of days) {
+          for (const slot of ['am','pm']) {
+            const sd = getSlot(p.id, fmtDate(d), slot);
+            if (sd && sd.projects && sd.projects.some(pr => pr.name.toLowerCase().includes(f))) return true;
+          }
+        }
+      }
+      return false;
+    });
+  }
   if (teamGroupBy === 'sub_team') {
     peopleSorted.sort((a,b) => {
       if (a.is_guest !== b.is_guest) return a.is_guest ? 1 : -1;
@@ -395,7 +531,22 @@ function renderTeamGrid(container) {
     const onCallAnyWeek = weeks.some(w => isOnCall(p.id, formatWeekStart(w)));
     const onCallWeeks = weeks.filter(w => isOnCall(p.id, formatWeekStart(w))).map(w => 'W'+getWeekNumber(w));
     const onCallTip = onCallWeeks.length > 0 ? 'On-call: '+onCallWeeks.join(', ') : 'Click to toggle on-call W'+getWeekNumber(weeks[0]);
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${esc(p.role||'')} · ${esc(p.sub_team||'')}">${esc(p.avatar_emoji)} ${esc(p.name)}`;
+    // Conflict warning: away + on-call/run in same week
+    let conflictWarn = '';
+    weeks.forEach(w => {
+      const ws = formatWeekStart(w);
+      if (isOnCall(p.id, ws) || isRunPerson(p.id, ws)) {
+        const days = getWeekDays(w);
+        for (const d of days) {
+          for (const slot of ['am','pm']) {
+            const sd = getSlot(p.id, fmtDate(d), slot);
+            if (sd && sd.away) { conflictWarn = `<span class="warn-icon" title="Away but on-call/run in W${getWeekNumber(w)}">⚠</span>`; break; }
+          }
+          if (conflictWarn) break;
+        }
+      }
+    });
+    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${esc(p.role||'')} · ${esc(p.sub_team||'')}">${esc(p.avatar_emoji)} ${esc(p.name)}${conflictWarn}`;
     if (canEdit()) html += `<button class="oncall-btn${onCallAnyWeek?' active':''}" onclick="event.stopPropagation();toggleOnCall('${p.id}','${firstWeekStart}')" title="${onCallTip}">📞</button>`;
     html += '</td>';
     let prevMergeKey = null;
@@ -426,16 +577,18 @@ function renderTeamGrid(container) {
   });
   html += '</tr></tbody></table></div>';
   // Nav controls
-  html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
-    <button onclick="scrollOffset--;API.reloadPlanning().then(render)">◀ Earlier</button>
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap">
+    <button onclick="scrollOffset--;savePrefs();API.reloadPlanning().then(render)">◀ Earlier</button>
     <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
-    <button onclick="scrollOffset++;API.reloadPlanning().then(render)">Later ▶</button>
-    <button onclick="scrollOffset=0;API.reloadPlanning().then(render)" style="margin-left:8px">Today</button>
+    <button onclick="scrollOffset++;savePrefs();API.reloadPlanning().then(render)">Later ▶</button>
+    <button onclick="scrollOffset=0;savePrefs();API.reloadPlanning().then(render)" style="margin-left:8px">Today</button>
+    <input type="search" id="team-filter" placeholder="Filter name / team / project" value="${esc(teamFilter)}" oninput="teamFilter=this.value;savePrefs();render()" style="width:160px;font-size:.8rem;margin-left:8px">
+    <label style="display:flex;align-items:center;gap:2px;font-size:.8rem">Jump to <input type="date" id="team-jump" onchange="jumpToDate(this.value)" style="width:auto;font-size:.8rem"></label>
     <span style="margin-left:12px;color:var(--fg-muted)">Group by:</span>
-    <button onclick="teamGroupBy='name';render()" style="font-weight:${teamGroupBy==='name'?'700':'400'}">Name</button>
-    <button onclick="teamGroupBy='sub_team';render()" style="font-weight:${teamGroupBy==='sub_team'?'700':'400'}">Sub-team</button>
-    <label style="margin-left:12px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${_showWeekend?'checked':''} onchange="_showWeekend=this.checked;render()" style="width:auto"> Weekends</label>
-    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${teamShowGuests?'checked':''} onchange="teamShowGuests=this.checked;render()" style="width:auto"> Guests</label>
+    <button onclick="teamGroupBy='name';savePrefs();render()" style="font-weight:${teamGroupBy==='name'?'700':'400'}">Name</button>
+    <button onclick="teamGroupBy='sub_team';savePrefs();render()" style="font-weight:${teamGroupBy==='sub_team'?'700':'400'}">Sub-team</button>
+    <label style="margin-left:12px;display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${_showWeekend?'checked':''} onchange="_showWeekend=this.checked;savePrefs();render()" style="width:auto"> Weekends</label>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${teamShowGuests?'checked':''} onchange="teamShowGuests=this.checked;savePrefs();render()" style="width:auto"> Guests</label>
   </div>`;
   // Legend
   html += `<div style="display:flex;gap:12px;margin-top:8px;font-size:.75rem;flex-wrap:wrap">
@@ -448,32 +601,8 @@ function renderTeamGrid(container) {
   container.innerHTML = html;
 }
 
-// ===== INDIVIDUAL VIEW =====
-function showIndividual(personId) { currentPersonId = personId; currentView = 'individual'; render(); }
-function renderIndividual(container) {
-  const p = getPerson(currentPersonId);
-  if (!p) { currentView = 'team'; render(); return; }
-  const weeks = getVisibleWeeks();
-  const wsStart = formatWeekStart(weeks[0]), wsEnd = formatWeekStart(weeks[weeks.length-1]);
-  let html = `<div class="indiv-header"><div class="person-info"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${esc(p.avatar_emoji)}</div><div><h2>${esc(p.name)}</h2><span style="color:var(--fg-muted);font-size:.85rem">${esc(p.role||'')}${p.sub_team?' · '+esc(p.sub_team):''}${p.is_guest?' · Guest':''}</span></div></div><div class="spacer" style="flex:1"></div><button onclick="downloadICS('${p.id}')" title="Period: ${wsStart} → ${wsEnd}">📅 Export ICS</button>`;
-  if (canEdit()) html += `<button onclick="copyLastWeek('${p.id}')">📋 Copy Last Week</button>`;
-  html += `<button onclick="currentView='team';render()">← Back</button></div>`;
-  html += '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">';
-  weeks.forEach(w => { const ws = formatWeekStart(w); const r = calcRunRatio(p.id, ws); html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem"><strong>W${getWeekNumber(w)}</strong>: Run ${r.run}/${r.working} half-days</div>`; });
-  html += '</div>';
-  html += '<table class="indiv-grid"><thead><tr><th>Date</th><th>Day</th><th>AM</th><th>PM</th></tr></thead><tbody>';
-  weeks.forEach(w => { const days = getWeekDays(w); const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const ds = fmtDate(d);
-      html += `<tr><td>${ds}</td><td>${dayNames[di]}</td>`;
-      ['am','pm'].forEach(slot => { const sd = getSlot(p.id, ds, slot); const cls = getSlotClass(sd); const label = getSlotLabel(sd);
-        const click = canEdit() ? ` onclick="openCellEditor('${p.id}','${ds}','${slot}')"` : '';
-        html += `<td class="slot-cell ${cls}"${click}>${label}</td>`; });
-      html += '</tr>';
-    });
-  });
-  html += '</tbody></table>';
-  container.innerHTML = html;
-}
+// Clicking a person name in the team grid opens the My Week view for that person.
+function showIndividual(personId) { currentPersonId = personId; currentView = 'myweek'; render(); }
 
 // ===== RUN COVERAGE VIEW =====
 function renderRunCoverage(container) {
@@ -524,15 +653,16 @@ function renderAvailability(container) {
   const selDate = fmtDate(selDay); const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
   const dayIdx = (selDay.getDay() + 6) % 7; const dayName = dayNames[dayIdx];
   const isToday = availabilityDayOffset === 0; const currentSlot = now.getHours() < 12 ? 'am' : 'pm';
-  let html = `<h2>Where is everyone — ${dayName} ${selDate}</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
-    <button onclick="availabilityDayOffset--;render()">◀ Previous day</button><button onclick="availabilityDayOffset=0;render()">Today</button><button onclick="availabilityDayOffset++;render()">Next day ▶</button></div>`;
+  const hl = isHoliday(selDate);
+  let html = `<h2>Where is everyone — ${dayName} ${selDate}${hl ? ` <span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</h2><div style="display:flex;gap:8px;align-items:center;margin-bottom:12px">
+    <button onclick="availabilityDayOffset--;savePrefs();render()">◀ Previous day</button><button onclick="availabilityDayOffset=0;savePrefs();render()">Today</button><button onclick="availabilityDayOffset++;savePrefs();render()">Next day ▶</button></div>`;
   html += '<div class="avail-grid">';
   people.forEach(p => {
     const amSd = getSlot(p.id, selDate, 'am'), pmSd = getSlot(p.id, selDate, 'pm');
     const amCls = getSlotClass(amSd), pmCls = getSlotClass(pmSd);
     const amBg = amCls.includes('project') && projectColorBg(amSd) ? ` style="background:${projectColorBg(amSd)}"` : '';
     const pmBg = pmCls.includes('project') && projectColorBg(pmSd) ? ` style="background:${projectColorBg(pmSd)}"` : '';
-    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; if (sd.state==='undetermined') return 'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${pn} + Run` : (pn||'Available'); }
+    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run` : (rem+pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
     html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
@@ -553,7 +683,7 @@ function renderGuests(container) {
   weeks.forEach((w, wi) => { html += `<th colspan="${slotsPerWeek}" class="${wi>0?'week-start':''}">W${getWeekNumber(w)} ${formatWeekStart(w).slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; html += `<th colspan="2" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span></th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; });
   });
   html += '</tr></thead><tbody>';
   const allSlots = [];
@@ -574,7 +704,7 @@ function renderGuests(container) {
     });
     html += '</tr>';
   });
-  html += `</tbody></table></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button onclick="scrollOffset--;API.reloadPlanning().then(render)">◀ Earlier</button><button onclick="scrollOffset=0;API.reloadPlanning().then(render)">Today</button><button onclick="scrollOffset++;API.reloadPlanning().then(render)">Later ▶</button></div>`;
+  html += `</tbody></table></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button onclick="scrollOffset--;savePrefs();API.reloadPlanning().then(render)">◀ Earlier</button><button onclick="scrollOffset=0;savePrefs();API.reloadPlanning().then(render)">Today</button><button onclick="scrollOffset++;savePrefs();API.reloadPlanning().then(render)">Later ▶</button></div>`;
   container.innerHTML = html;
 }
 
@@ -636,7 +766,7 @@ function renderGeneralProjectView() {
     html += `<div class="project-card"><div class="proj-header"><span class="proj-emoji" style="font-size:1.3rem">${esc(proj.emoji)}</span><span class="proj-name">${escapeHtml(proj.name)}</span><span class="status-badge" style="background:${statusColor}">${STATUS_LABELS[proj.status]||proj.status}</span><span style="margin-left:auto;display:flex;gap:4px">`;
     if (canEdit()) html += `<button onclick="showEditProjectModal('${proj.id}')" style="font-size:.75rem;padding:2px 8px">✏</button><button class="danger" onclick="confirmDeleteProject('${proj.id}')" style="font-size:.75rem;padding:2px 8px">🗑</button>`;
     const urlOk = proj.url && /^https?:\/\/|^mailto:/i.test(proj.url);
-    html += `</span></div>${proj.description?`<div class="proj-desc">${escapeHtml(proj.description)}</div>`:''}<div class="proj-meta">${proj.start_date?`<span>📅 ${proj.start_date}</span>`:''}${proj.end_date?`<span>→ ${proj.end_date}</span>`:''}${urlOk?`<a href="${escapeHtml(proj.url)}" target="_blank" style="font-size:.8rem">🔗 Link</a>`:proj.url?`<span style="font-size:.8rem;color:var(--fg-muted)">${escapeHtml(proj.url)}</span>`:''}</div><div class="proj-people">👥 ${escapeHtml(peopleNames)}</div></div>`;
+    html += `</span></div>${proj.description?`<div class="proj-desc">${escapeHtml(proj.description)}</div>`:''}<div class="proj-meta">${proj.start_date?`<span>📅 ${proj.start_date}</span>`:''}${proj.end_date?`<span>→ ${proj.end_date}</span>`:''}${urlOk?`<a href="${escapeHtml(proj.url)}" target="_blank" style="font-size:.8rem">🔗 Link</a>`:proj.url?`<span style="font-size:.8rem;color:var(--fg-muted)">${escapeHtml(proj.url)}</span>`:''}</div><div class="proj-people">${(() => { let h=''; if (proj.team_lead) { const lead = getPerson(proj.team_lead); if (lead) { const ls = lead.is_guest ? 'color:var(--fg-muted);font-style:italic' : 'font-weight:600'; h += '<div style="margin-bottom:2px;'+ls+'">⭐ '+esc(lead.avatar_emoji)+' '+esc(lead.name)+(lead.is_guest?' <span style="font-size:.7rem">(guest)</span>':'')+'</div>'; } } h += '👥 '+escapeHtml(peopleNames); return h; })()}</div></div>`;
   });
   return html;
 }
@@ -724,6 +854,224 @@ function renderAdmin(container) {
   container.innerHTML = html;
 }
 
+// ===== WORKLOAD VIEW (all roles) =====
+
+// Half-day workload value per the spec:
+// not filled / away = 0; project(s) = sum of pct; project(s)+run = sum of pct; run only = 100; undetermined = 100.
+function halfDayValue(sd) {
+  if (!sd || sd.state === 'not_filled') return 0;
+  if (sd.away) return 0;
+  if (sd.state === 'undetermined') return 100;
+  if (sd.projects && sd.projects.length > 0) return sd.projects.reduce((a,pr) => a + (pr.pct||0), 0);
+  if (sd.run) return 100;
+  return 0;
+}
+// Half-day presence: away = 0, everything else (not filled, project, run, undetermined) = 100.
+function halfDayPresence(sd) {
+  if (sd && sd.away) return 0;
+  return 100;
+}
+
+function renderWorkload(container) {
+  const people = getActivePeople();
+  const weeks = getVisibleWeeks();
+  const dayCount = _showWeekend ? 7 : 5;
+  let html = '<h2>Workload</h2><p style="color:var(--fg-muted);font-size:.85rem;margin-bottom:8px">Average daily allocation (AM+PM / 2). <span style="color:var(--danger)">Red</span> = over 100% in a half-day. Away/not-filled = 0, run-only/undetermined = 100, projects = sum of %.</p>';
+  html += '<div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Person</th>';
+  weeks.forEach((w, wi) => { const ws = formatWeekStart(w); const wn = getWeekNumber(w); html += `<th colspan="${dayCount}" class="${wi>0?'week-start':''}">W${wn} ${ws.slice(5)}</th>`; });
+  html += '</tr><tr><th class="person-col"></th>';
+  weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; html += `<th class="${di===0&&wi>0?'week-start':''}">${dayNames[di]} / ${d.getDate()}</th>`; });
+  });
+  html += '</tr></thead><tbody>';
+  // Per-person rows
+  people.forEach(p => {
+    html += `<tr><td class="person-col">${esc(p.avatar_emoji)} ${esc(p.name)}</td>`;
+    weeks.forEach((w, wi) => {
+      const days = getWeekDays(w);
+      days.forEach((d, di) => {
+        if (di >= 5 && !_showWeekend) return;
+        const ds = fmtDate(d);
+        const amSd = getSlot(p.id, ds, 'am'), pmSd = getSlot(p.id, ds, 'pm');
+        const amVal = halfDayValue(amSd), pmVal = halfDayValue(pmSd);
+        const dayAvg = Math.round((amVal + pmVal) / 2);
+        const over = amVal > 100 || pmVal > 100;
+        let tipParts = [];
+        [amSd, pmSd].forEach(sd => { if (sd && sd.projects) sd.projects.forEach(pr => { if (!tipParts.includes(pr.name)) tipParts.push(pr.name); }); if (sd && sd.state === 'undetermined' && !tipParts.includes('TBD')) tipParts.push('TBD'); if (sd && sd.run && (!sd.projects || sd.projects.length === 0) && !tipParts.includes('Run')) tipParts.push('Run'); });
+        const cls = over ? ' style="color:var(--danger);font-weight:700"' : '';
+        html += `<td${cls} title="${esc(tipParts.join(', '))}">${dayAvg > 0 ? dayAvg + '%' : '\u2014'}</td>`;
+      });
+    });
+    html += '</tr>';
+  });
+  // Remote percentage summary row (per day)
+  html += '<tr class="summary-row"><td class="person-col" style="font-size:.7rem">\ud83c\udf68 Remote</td>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5 && !_showWeekend) return;
+      const ds = fmtDate(d);
+      let remoteCount = 0;
+      people.forEach(p => { const amSd = getSlot(p.id, ds, 'am'), pmSd = getSlot(p.id, ds, 'pm'); if ((amSd && amSd.remote) || (pmSd && pmSd.remote)) remoteCount++; });
+      const pct = people.length > 0 ? Math.round(remoteCount / people.length * 100) : 0;
+      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
+      const color = pct > 0 ? 'var(--remote-border)' : 'var(--fg-muted)';
+      html += `<td class="${sep}" style="font-size:.65rem;padding:2px 4px;color:${color}">${pct > 0 ? pct + '%' : '\u2014'}</td>`;
+    });
+  });
+  html += '</tr>';
+  // Weekly presence summary row (per week, team average): away = 0, everything else = 100
+  html += '<tr class="summary-row"><td class="person-col" style="font-size:.7rem">Presence</td>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    let totalPresence = 0, totalSlots = 0;
+    people.forEach(p => {
+      days.forEach((d, di) => {
+        if (di >= 5 && !_showWeekend) return;
+        const ds = fmtDate(d);
+        ['am','pm'].forEach(slot => { const sd = getSlot(p.id, ds, slot); totalSlots++; totalPresence += halfDayPresence(sd); });
+      });
+    });
+    const presencePct = totalSlots > 0 ? Math.round(totalPresence / totalSlots) : 0;
+    const sep = wi > 0 ? ' week-start' : '';
+    html += `<td colspan="${dayCount}" class="${sep}" style="font-size:.65rem;padding:2px 4px;color:var(--accent);font-weight:600">${presencePct}%</td>`;
+  });
+  html += '</tr>';
+  html += '</tbody></table></div>';
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-top:8px">
+    <button onclick="scrollOffset--;savePrefs();API.reloadPlanning().then(render)">\u25c0 Earlier</button>
+    <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} \u2013 ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
+    <button onclick="scrollOffset++;savePrefs();API.reloadPlanning().then(render)">Later \u25b6</button>
+    <button onclick="scrollOffset=0;savePrefs();API.reloadPlanning().then(render)" style="margin-left:8px">Today</button>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${_showWeekend?'checked':''} onchange="_showWeekend=this.checked;savePrefs();render()" style="width:auto"> Weekends</label>
+  </div>`;
+  container.innerHTML = html;
+}
+
+// ===== ACTIVITY VIEW (all roles) =====
+function renderActivity(container) {
+  if (!Array.isArray(State.activity)) State.activity = [];
+  // Show cached data immediately (instant tab switch), then always fetch fresh.
+  if (State.activity.length > 0) renderActivityList(container);
+  else container.innerHTML = '<h2>Activity</h2><p style="color:var(--fg-muted)">Loading…</p>';
+  API.get('/activity?limit=50').then(d => { State.activity = d || []; renderActivityList(container); });
+}
+function renderActivityList(container) {
+  let html = '<h2>Activity</h2><div style="margin-bottom:8px"><button onclick="API.get(\'/activity?limit=50\').then(d=>{State.activity=d||[];render()})">🔄 Refresh</button></div>';
+  html += '<div style="display:flex;flex-direction:column;gap:4px;max-height:70vh;overflow-y:auto">';
+  if (State.activity.length === 0) html += '<p style="color:var(--fg-muted)">No activity yet.</p>';
+  State.activity.forEach(e => {
+    const ts = e.ts ? new Date(e.ts).toLocaleString() : '';
+    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem">
+      <span style="color:var(--fg-muted);font-size:.7rem">${esc(ts)}</span>
+      <span class="pv-badge" style="font-size:.7rem;padding:1px 6px;border-radius:3px;background:var(--accent);color:#fff;margin:0 4px">${esc(e.actor||'')}</span>
+      <strong>${esc(e.action||'')}</strong>
+      ${e.target ? `<code style="font-size:.7rem;color:var(--fg-muted)">${esc(e.target)}</code>` : ''}
+      ${e.detail ? `<span style="color:var(--fg-muted);font-size:.75rem">— ${esc(e.detail)}</span>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ===== USERS VIEW (admin only) =====
+function renderUsers(container) {
+  if (!Array.isArray(State.users)) State.users = [];
+  if (State.users.length === 0) {
+    API.get('/users').then(d => { State.users = d || []; render(); });
+    container.innerHTML = '<h2>Users</h2><p style="color:var(--fg-muted)">Loading…</p>';
+    return;
+  }
+  let html = '<h2>Users</h2><p style="color:var(--fg-muted);font-size:.85rem;margin-bottom:8px">Roles come from Keycloak groups (read-only).</p>';
+  html += '<table class="grid-table" style="width:100%"><thead><tr><th>Username</th><th>Role</th><th>Created</th><th>Last seen</th><th>I am (person)</th></tr></thead><tbody>';
+  State.users.forEach(u => {
+    const created = u.created_at ? new Date(u.created_at).toLocaleString() : '—';
+    const lastSeen = u.last_seen ? new Date(u.last_seen).toLocaleString() : '—';
+    html += `<tr><td>${esc(u.username)}</td><td>${esc(u.role)}</td><td>${created}</td><td>${lastSeen}</td><td><select onchange="API.put('/users/'+${u.id}+'/person',{person_id:this.value}).then(()=>{u.person_id=this.value;toast('Updated','success')})" style="width:auto;font-size:.75rem">`;
+    html += '<option value="">—</option>';
+    State.people.forEach(p => html += `<option value="${p.id}" ${u.person_id===p.id?'selected':''}>${esc(p.name)}</option>`);
+    html += '</select></td></tr>';
+  });
+  html += '</tbody></table>';
+  container.innerHTML = html;
+}
+
+// ===== MY WEEK VIEW (all roles, mobile-optimised) =====
+function renderMyWeek(container) {
+  // Works for both "My Week" (the logged-in user's person) and clicking a
+  // specific person in the team grid (via currentPersonId). The nav button
+  // clears currentPersonId so the tab shows the logged-in user's person.
+  const pid = currentPersonId || State.myPersonId;
+  if (!pid) {
+    let html = '<h2>My Week</h2><p style="color:var(--fg-muted);margin-bottom:12px">Select who you are from the picker in the top bar, or choose below:</p>';
+    html += '<select onchange="API.put(\'/me/person\',{person_id:this.value}).then(()=>{State.myPersonId=this.value;render()})" style="width:auto;font-size:1rem;padding:6px 12px">';
+    html += '<option value="">I am…</option>';
+    State.people.filter(p => p.status === 'active').forEach(p => html += `<option value="${p.id}">${esc(p.name)}</option>`);
+    html += '</select>';
+    container.innerHTML = html;
+    return;
+  }
+  const p = getPerson(pid);
+  if (!p) { container.innerHTML = '<h2>My Week</h2><p style="color:var(--fg-muted)">Person not found. Please re-select in the top bar.</p>'; return; }
+  const weeks = getVisibleWeeks();
+  const wsStart = formatWeekStart(weeks[0]), wsEnd = formatWeekStart(weeks[weeks.length-1]);
+  // Header with ICS export / copy / subscription (merged from the old individual view)
+  let html = `<div class="indiv-header"><div class="person-info"><div class="avatar" style="background:${p.avatar_color}20;color:${p.avatar_color}">${esc(p.avatar_emoji)}</div><div><h2>${esc(p.name)}</h2><span style="color:var(--fg-muted);font-size:.85rem">${esc(p.role||'')}${p.sub_team?' · '+esc(p.sub_team):''}${p.is_guest?' · Guest':''}</span></div></div><div class="spacer" style="flex:1"></div>`;
+  html += `<button onclick="downloadICS('${p.id}')" title="Period: ${wsStart} → ${wsEnd}">📅 Export ICS</button>`;
+  if (canEdit()) html += `<button onclick="copyLastWeek('${p.id}')">📋 Copy Last Week</button>`;
+  if (currentPersonId) html += `<button onclick="currentPersonId=null;currentView='team';render()">← Back</button>`;
+  html += `</div>`;
+  // ICS subscription
+  if (p.ics_token) {
+    const url = `${location.origin}/api/ics/public/${p.ics_token}`;
+    html += `<div style="margin-top:8px;font-size:.8rem;color:var(--fg-muted)">📅 Subscribe: <code style="font-size:.7rem">${esc(url)}</code> <button onclick="navigator.clipboard.writeText('${url}').then(()=>toast('Copied!','success'))" style="font-size:.7rem;padding:1px 6px">Copy</button></div>`;
+  }
+  if (isAdmin()) {
+    html += `<div style="margin-top:4px;display:flex;gap:4px">`;
+    html += `<button onclick="API.post('/people/${p.id}/ics-token').then(r=>{const pp=getPerson('${p.id}');if(pp)pp.ics_token=r.token;render()})" style="font-size:.7rem;padding:1px 6px">${p.ics_token?'Reset':'Generate'} subscription</button>`;
+    if (p.ics_token) html += `<button onclick="API.del('/people/${p.id}/ics-token').then(()=>{const pp=getPerson('${p.id}');if(pp)pp.ics_token='';render()})" style="font-size:.7rem;padding:1px 6px">Revoke</button>`;
+    html += `</div>`;
+  }
+  // Run ratio per week
+  html += '<div style="display:flex;gap:16px;margin-bottom:12px;flex-wrap:wrap">';
+  weeks.forEach(w => { const ws = formatWeekStart(w); const r = calcRunRatio(p.id, ws); html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem"><strong>W${getWeekNumber(w)}</strong>: Run ${r.run}/${r.working} half-days</div>`; });
+  html += '</div>';
+  // Nav controls
+  html += `<div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
+    <button onclick="scrollOffset--;savePrefs();API.reloadPlanning().then(render)">◀ Earlier</button>
+    <span>Weeks ${formatWeekStart(weeks[0]).slice(5)} – ${formatWeekStart(weeks[weeks.length-1]).slice(5)}</span>
+    <button onclick="scrollOffset++;savePrefs();API.reloadPlanning().then(render)">Later ▶</button>
+    <button onclick="scrollOffset=0;savePrefs();API.reloadPlanning().then(render)" style="margin-left:8px">Today</button>
+    <label style="display:flex;align-items:center;gap:4px;cursor:pointer;font-size:.85rem"><input type="checkbox" ${_showWeekend?'checked':''} onchange="_showWeekend=this.checked;savePrefs();render()" style="width:auto"> Weekends</label>
+  </div>`;
+  // Day cards (mobile-friendly, large tap targets)
+  weeks.forEach(w => {
+    const ws = formatWeekStart(w);
+    html += `<div style="margin-bottom:12px"><strong>Week ${getWeekNumber(w)} — ${ws}</strong></div>`;
+    const days = getWeekDays(w);
+    const dayNames = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+    days.forEach((d, di) => {
+      if (di >= 5 && !_showWeekend) return;
+      const ds = fmtDate(d);
+      html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:10px;margin-bottom:6px">
+        <div style="font-weight:600;margin-bottom:6px;font-size:.9rem">${dayNames[di]} ${ds}</div>
+        <div style="display:flex;gap:8px">`;
+      ['am','pm'].forEach(slot => {
+        const sd = getSlot(p.id, ds, slot);
+        const cls = getSlotClass(sd);
+        const label = getSlotLabel(sd);
+        const click = canEdit() ? ` onclick="openCellEditor('${p.id}','${ds}','${slot}')"` : '';
+        html += `<div class="myweek-slot ${cls}"${click} style="flex:1;padding:12px;border-radius:6px;text-align:center;font-size:1rem;cursor:${canEdit()?'pointer':'default'}">
+          <div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:4px">${slot.toUpperCase()}</div>
+          <div>${escapeHtml(label)}</div>
+        </div>`;
+      });
+      html += '</div></div>';
+    });
+  });
+  container.innerHTML = html;
+}
+
 // ===== DRAG SELECTION =====
 function startDrag(event, personId, date, slot, row, col) {
   event.preventDefault();
@@ -762,48 +1110,72 @@ function openCellEditor(personId, date, slot) {
   editorPersonId = personId; editorDate = date; editorSlot = slot;
   const slotData = getSlot(personId, date, slot) || { state: 'not_filled', away: null, projects: [], run: false };
   const p = getPerson(personId); const name = p ? p.name : personId;
-  const isAway = slotData && slotData.away; const isUndetermined = slotData && slotData.state === 'undetermined';
+  const isAway = slotData && slotData.away; const isUndetermined = slotData && slotData.state === 'undetermined'; const activeTab = isUndetermined ? 'undetermined' : isAway ? 'away' : 'project';
   const projects = (slotData && slotData.projects) ? clone(slotData.projects) : [{ name: '', pct: 100 }];
   const runChecked = slotData && slotData.run;
   let html = `<div style="font-weight:600;margin-bottom:8px">${name} · ${date} ${slot.toUpperCase()}</div>
-  <div class="tabs"><button class="active" data-tab="project" onclick="switchEditorTab('project')">Project</button><button data-tab="away" onclick="switchEditorTab('away')">Away</button><button data-tab="undetermined" onclick="setUndetermined()">Undetermined</button><button data-tab="clear" onclick="clearSlot()">Clear</button></div>`;
-  html += `<div id="editor-tab-project" class="tab-content ${isAway||isUndetermined?'hidden':''}"><div id="project-list">`;
+  <div class="tabs"><button class="${activeTab==='project'?'active':''}" data-tab="project" onclick="switchEditorTab('project')">Project</button><button class="${activeTab==='away'?'active':''}" data-tab="away" onclick="switchEditorTab('away')">Away</button><button class="${activeTab==='undetermined'?'active':''}" data-tab="undetermined" onclick="switchEditorTab('undetermined')">Undetermined</button><button class="${activeTab==='clear'?'active':''}" data-tab="clear" onclick="switchEditorTab('clear')">Clear</button></div>`;
+  html += `<div id="editor-tab-project" class="tab-content ${activeTab!=='project'?'hidden':''}"><div id="project-list">`;
   projects.forEach((proj, i) => { html += `<div class="project-row"><input type="text" value="${proj.name}" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="${proj.pct}" onchange="updatePctTotal()"><span>%</span>${projects.length>1?`<button onclick="removeProject(${i})">✕</button>`:''}</div>`; });
   html += `</div><button onclick="addEditorProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button><div class="pct-total" id="pct-total">Total: ${sum(projects.map(p=>p.pct))}%</div><div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${runChecked?'checked':''} onchange="window.editorRunToggle=this.checked"> 🏃 Run duty</label></div></div>`;
   const awayTypes = ['vacation','public_holiday','sick_leave','training','conference','parental_leave','sabbatical','other'];
   const currentAway = isAway ? slotData.away.type : ''; const currentNote = isAway ? (slotData.away.note || '') : '';
-  html += `<div id="editor-tab-away" class="tab-content ${isAway?'':'hidden'}"><div class="form-row"><label>Type</label><select id="away-type">${awayTypes.map(t=>`<option value="${t}" ${currentAway===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div></div>`;
-  html += `<div class="form-actions"><button onclick="closeCellEditor()">Cancel</button><button onclick="saveCellEditor()" class="primary">Save</button></div>`;
+  html += `<div id="editor-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="away-type">${awayTypes.map(t=>`<option value="${t}" ${currentAway===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div></div>`;
+  html += `<div id="editor-tab-undetermined" class="tab-content ${activeTab!=='undetermined'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Mark this half-day as "Project (TBD)".</p></div>
+  <div id="editor-tab-clear" class="tab-content ${activeTab!=='clear'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Clear this half-day (set to not filled).</p></div>
+  <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${slotData&&slotData.remote?'checked':''} onchange="window.editorRemoteToggle=this.checked"> 🏠 Remote</label></div>
+  <div class="form-actions"><button onclick="closeCellEditor()">Cancel</button><button onclick="saveCellEditor()" class="primary">Save</button></div>`;
   html += projectNamesDatalist();
   const editor = document.getElementById('cell-editor');
   editor.innerHTML = html; editor.classList.remove('hidden');
   editor.style.top = '50%'; editor.style.left = '50%'; editor.style.transform = 'translate(-50%,-50%)';
   window.editorRunToggle = runChecked;
+  window.editorRemoteToggle = slotData && slotData.remote;
 }
-function switchEditorTab(tab) { const editor = document.getElementById('cell-editor'); editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden')); const btn = editor.querySelector(`.tabs button[data-tab="${tab}"]`); if (btn) btn.classList.add('active'); const tc = document.getElementById(`editor-tab-${tab}`); if (tc) tc.classList.remove('hidden'); }
+function switchEditorTab(tab) { const editor = document.getElementById('cell-editor'); editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden')); const btn = editor.querySelector(`.tabs button[data-tab="${tab}"]`); if (btn) btn.classList.add('active'); const tc = document.getElementById(`editor-tab-${tab}`); if (tc) tc.classList.remove('hidden'); if (tab === 'clear') { const rcb = editor.querySelector('input[onchange*="editorRemoteToggle"]'); if (rcb) { rcb.checked = false; window.editorRemoteToggle = false; } } }
 function addEditorProject() { const list = document.getElementById('project-list'); const div = document.createElement('div'); div.className = 'project-row'; div.innerHTML = `<input type="text" value="" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="50" onchange="updatePctTotal()"><span>%</span><button onclick="removeProject(Array.from(this.parentElement.parentElement.children).indexOf(this.parentElement))">✕</button>`; list.appendChild(div); updatePctTotal(); }
 function removeProject(idx) { const rows = document.getElementById('project-list').children; if (rows.length <= 1) return; rows[idx].remove(); updatePctTotal(); }
 function updatePctTotal() { const rows = document.getElementById('project-list').children; let total = 0; Array.from(rows).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 async function saveCellEditor() {
-  const awayTab = document.getElementById('editor-tab-away');
-  if (awayTab && !awayTab.classList.contains('hidden')) {
-    const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
-    const data = { state: 'filled', away: { type, note }, projects: [], run: false };
+  const activeTab = document.querySelector('#cell-editor .tabs button.active')?.dataset.tab || 'project';
+  if (activeTab === 'clear') {
     pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-  } else {
-    const rows = document.getElementById('project-list').children; const projects = []; let total = 0;
-    Array.from(rows).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
-    if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
-    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: projects.length > 0 || window.editorRunToggle ? 'filled' : 'not_filled', away: null, projects, run: !!window.editorRunToggle };
-    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    if (window.editorRemoteToggle) {
+      const data = { state: 'filled', away: null, projects: [], run: false, remote: true };
+      await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+      State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    } else {
+      await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot });
+      delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)];
+    }
+    closeCellEditor(); render(); return;
   }
+  if (activeTab === 'undetermined') {
+    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
+    const data = { state: 'undetermined', away: null, projects: [], run: false, remote: !!window.editorRemoteToggle };
+    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    closeCellEditor(); render(); return;
+  }
+  if (activeTab === 'away') {
+    const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
+    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
+    const data = { state: 'filled', away: { type, note }, projects: [], run: false, remote: !!window.editorRemoteToggle };
+    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    closeCellEditor(); render(); return;
+  }
+  // project tab
+  const rows = document.getElementById('project-list').children; const projects = []; let total = 0;
+  Array.from(rows).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
+  if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
+  pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
+  const data = { state: projects.length > 0 || window.editorRunToggle || window.editorRemoteToggle ? 'filled' : 'not_filled', away: null, projects, run: !!window.editorRunToggle, remote: !!window.editorRemoteToggle };
+  await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+  State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
   closeCellEditor(); render();
 }
-async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, projects: [], run: false }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
+async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, projects: [], run: false, remote: !!window.editorRemoteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
 async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
 function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
 
@@ -820,6 +1192,7 @@ function openRangeEditor(cells) {
     <button onclick="addRangeProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
     <div class="pct-total" id="range-pct-total">Total: 100%</div>
     <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty</label></div>
+    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-remote" style="width:auto"> 🏠 Remote</label></div>
     <div style="margin:12px 0;border-top:1px solid var(--border)"></div>
     <div class="form-row"><label>Or set Away type:</label><select id="range-away-type"><option value="">— None —</option><option value="vacation">Vacation</option><option value="public_holiday">Public holiday</option><option value="sick_leave">Sick leave</option><option value="training">Training</option><option value="conference">Conference</option><option value="parental_leave">Parental leave</option><option value="sabbatical">Sabbatical</option><option value="other">Other</option></select></div>
     <div class="form-actions"><button onclick="closeModal()">Cancel</button><button onclick="applyRangeUndetermined()">Set Undetermined</button><button onclick="applyRangeClear()">Clear All</button><button class="primary" onclick="applyRangeEditor()">Apply to All</button></div>`;
@@ -831,7 +1204,7 @@ function removeRangeProject(row) { const list = document.getElementById('range-p
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false} : projects.length > 0 ? {state:'filled',away:null,projects,run} : run ? {state:'filled',away:null,projects:[],run:true} : {state:'not_filled',away:null,projects:[],run:false}; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false,remote} : projects.length > 0 ? {state:'filled',away:null,projects,run,remote} : run ? {state:'filled',away:null,projects:[],run:true,remote} : remote ? {state:'filled',away:null,projects:[],run:false,remote:true} : {state:'not_filled',away:null,projects:[],run:false}; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 
@@ -898,6 +1271,15 @@ async function submitEditPerson(personId) {
 }
 
 // ===== ADD/EDIT PROJECT MODAL =====
+
+function teamLeadOptions(selectedId) {
+  let opts = '<option value="">— None —</option>';
+  State.people.filter(p => p.status === 'active').forEach(p => {
+    opts += `<option value="${p.id}" ${selectedId === p.id ? 'selected' : ''}>${p.is_guest ? 'Guest: ' : ''}${esc(p.name)}</option>`;
+  });
+  return opts;
+}
+
 function showAddProjectModal() {
   showModal(`<h2>Add Project</h2>
     <div class="form-row"><label>Name *</label><input type="text" id="proj-name" placeholder="e.g. Atlas"></div>
@@ -906,13 +1288,14 @@ function showAddProjectModal() {
     <div class="form-row"><label>URL</label><input type="text" id="proj-url" placeholder="https://..."></div>
     <div style="display:flex;gap:12px"><div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="proj-start" placeholder="2025/01/06" style="flex:1"><input type="date" id="proj-start-picker" style="width:36px" onchange="datePickerToText(this,'proj-start')"></div></div><div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="proj-end" placeholder="2025/03/28" style="flex:1"><input type="date" id="proj-end-picker" style="width:36px" onchange="datePickerToText(this,'proj-end')"></div></div></div>
     <div class="form-row"><label>Status</label><select id="proj-status">${PROJECT_STATUSES.map(s=>`<option value="${s}">${STATUS_LABELS[s]}</option>`).join('')}</select></div>
+    <div class="form-row"><label>Team lead</label><select id="proj-lead">${teamLeadOptions('')}</select></div>
     <div class="form-actions"><button onclick="closeModal()">Cancel</button><button class="primary" onclick="submitAddProject()">Add</button></div>`);
 }
 async function submitAddProject() {
   const name = document.getElementById('proj-name').value.trim();
   if (!name) { toast('Name is required', 'error'); return; }
   if (getProjectByName(name)) { toast('Project already exists', 'error'); return; }
-  const proj = await API.post('/projects', { name, emoji: document.getElementById('proj-emoji').value.trim() || '📁', description: document.getElementById('proj-desc').value.trim(), url: document.getElementById('proj-url').value.trim(), start_date: document.getElementById('proj-start').value.trim(), end_date: document.getElementById('proj-end').value.trim(), status: document.getElementById('proj-status').value });
+  const proj = await API.post('/projects', { name, emoji: document.getElementById('proj-emoji').value.trim() || '📁', description: document.getElementById('proj-desc').value.trim(), url: document.getElementById('proj-url').value.trim(), start_date: document.getElementById('proj-start').value.trim(), end_date: document.getElementById('proj-end').value.trim(), status: document.getElementById('proj-status').value, team_lead: document.getElementById('proj-lead').value });
   if (!State.projects.find(x => x.id === proj.id)) State.projects.push(proj); closeModal(); render();
 }
 function showEditProjectModal(id) {
@@ -924,12 +1307,13 @@ function showEditProjectModal(id) {
     <div class="form-row"><label>URL</label><input type="text" id="edit-proj-url" value="${proj.url||''}"></div>
     <div style="display:flex;gap:12px"><div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-proj-start" value="${proj.start_date||''}" style="flex:1"><input type="date" id="edit-proj-start-picker" style="width:36px" onchange="datePickerToText(this,'edit-proj-start')"></div></div><div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="edit-proj-end" value="${proj.end_date||''}" style="flex:1"><input type="date" id="edit-proj-end-picker" style="width:36px" onchange="datePickerToText(this,'edit-proj-end')"></div></div></div>
     <div class="form-row"><label>Status</label><select id="edit-proj-status">${PROJECT_STATUSES.map(s=>`<option value="${s}" ${proj.status===s?'selected':''}>${STATUS_LABELS[s]}</option>`).join('')}</select></div>
+    <div class="form-row"><label>Team lead</label><select id="edit-proj-lead">${teamLeadOptions(proj.team_lead)}</select></div>
     <div class="form-actions"><button onclick="closeModal()">Cancel</button><button class="primary" onclick="submitEditProject('${id}')">Save</button></div>`);
 }
 async function submitEditProject(id) {
   const name = document.getElementById('edit-proj-name').value.trim();
   if (!name) { toast('Name is required', 'error'); return; }
-  const updated = { name, emoji: document.getElementById('edit-proj-emoji').value.trim() || '📁', description: document.getElementById('edit-proj-desc').value.trim(), url: document.getElementById('edit-proj-url').value.trim(), start_date: document.getElementById('edit-proj-start').value.trim(), end_date: document.getElementById('edit-proj-end').value.trim(), status: document.getElementById('edit-proj-status').value };
+  const updated = { name, emoji: document.getElementById('edit-proj-emoji').value.trim() || '📁', description: document.getElementById('edit-proj-desc').value.trim(), url: document.getElementById('edit-proj-url').value.trim(), start_date: document.getElementById('edit-proj-start').value.trim(), end_date: document.getElementById('edit-proj-end').value.trim(), status: document.getElementById('edit-proj-status').value, team_lead: document.getElementById('edit-proj-lead').value };
   await API.put(`/projects/${id}`, updated);
   const i = State.projects.findIndex(p => p.id === id); if (i >= 0) State.projects[i] = Object.assign(State.projects[i], updated);
   closeModal(); render();
@@ -992,8 +1376,8 @@ async function downloadICS(personId) {
       const esc = s => String(s||'').replace(/\\/g,'\\\\').replace(/,/g,'\\,').replace(/;/g,'\\;').replace(/\n/g,'\\n');
       if (sd.state === 'undetermined') { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: undetermined')}\r\nEND:VEVENT\r\n`); return; }
       if (sd.away) { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Away: '+sd.away.type)}\r\nDESCRIPTION:${esc(sd.away.note||'')}\r\nCATEGORIES:${esc(sd.away.type)}\r\nEND:VEVENT\r\n`); return; }
-      if (sd.projects && sd.projects.length > 0) sd.projects.forEach(proj => { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: '+proj.name)}\r\nDESCRIPTION:${esc(proj.name+' ('+proj.pct+'%)'+(sd.run?' + Run':''))}\r\nCATEGORIES:project\r\nEND:VEVENT\r\n`); });
-      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty')}\r\nCATEGORIES:run\r\nEND:VEVENT\r\n`);
+      if (sd.projects && sd.projects.length > 0) sd.projects.forEach(proj => { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: '+proj.name+(sd.remote?' 🏠':''))}\r\nDESCRIPTION:${esc(proj.name+' ('+proj.pct+'%)'+(sd.run?' + Run':'')+(sd.remote?' + Remote':''))}\r\nCATEGORIES:project\r\nEND:VEVENT\r\n`); });
+      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty'+(sd.remote?' 🏠':''))}\r\nCATEGORIES:run\r\nEND:VEVENT\r\n`);
     });
   }
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamVisualizer//V1//EN\r\n' + events.join('') + 'END:VCALENDAR\r\n';
@@ -1015,7 +1399,7 @@ async function copyLastWeek(personId) {
 }
 
 // ===== HELP =====
-function showHelp() { showModal(`<h2>Keyboard Shortcuts</h2><div class="help-shortcuts"><span><kbd>Tab</kbd></span><span>Move between cells</span><span><kbd>Enter</kbd></span><span>Open cell editor</span><span><kbd>←</kbd></span><span>Move timeframe back (Team / Availability)</span><span><kbd>→</kbd></span><span>Move timeframe forward (Team / Availability)</span><span><kbd>U</kbd></span><span>Mark undetermined</span><span><kbd>R</kbd></span><span>Toggle run</span><span><kbd>Ctrl+Z</kbd></span><span>Undo</span><span><kbd>Escape</kbd></span><span>Close editor / modal</span></div><div class="form-actions"><button onclick="closeModal()">Close</button></div>`); }
+function showHelp() { showModal(`<h2>Keyboard Shortcuts</h2><div class="help-shortcuts"><span><kbd>Tab</kbd></span><span>Move between cells</span><span><kbd>Enter</kbd></span><span>Open cell editor</span><span><kbd>←</kbd></span><span>Move timeframe back (Team / Availability)</span><span><kbd>→</kbd></span><span>Move timeframe forward (Team / Availability)</span><span><kbd>U</kbd></span><span>Mark undetermined</span><span><kbd>R</kbd></span><span>Toggle run</span><span><kbd>Ctrl+Z</kbd></span><span>Undo</span><span><kbd>Ctrl+Shift+Z</kbd></span><span>Redo</span><span><kbd>Escape</kbd></span><span>Close editor / modal</span></div><div class="form-actions"><button onclick="closeModal()">Close</button></div>`); }
 
 // ===== KEYBOARD SHORTCUTS =====
 function modalOpen() {
@@ -1027,6 +1411,7 @@ document.addEventListener('keydown', (e) => {
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
+  if ((e.ctrlKey && e.key === 'Z') || (e.ctrlKey && e.key === 'y')) { e.preventDefault(); redo(); }
   if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
   if (e.key === 'u' && !e.ctrlKey && editorPersonId) setUndetermined();
   if (e.key === 'r' && !e.ctrlKey && editorPersonId) { window.editorRunToggle = !window.editorRunToggle; const cb = document.getElementById('cell-editor')?.querySelector('input[type="checkbox"]'); if (cb) cb.checked = window.editorRunToggle; }
@@ -1034,17 +1419,17 @@ document.addEventListener('keydown', (e) => {
   if (editorPersonId || modalOpen()) return;
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     const dir = e.key === 'ArrowLeft' ? -1 : 1;
-    if (currentView === 'team') { scrollOffset += dir; API.reloadPlanning().then(render); e.preventDefault(); }
-    else if (currentView === 'availability') { availabilityDayOffset += dir; render(); e.preventDefault(); }
+    if (currentView === 'team') { scrollOffset += dir; savePrefs(); API.reloadPlanning().then(render); e.preventDefault(); }
+    else if (currentView === 'availability') { availabilityDayOffset += dir; savePrefs(); render(); e.preventDefault(); }
   }
 });
 
 // ===== NAVIGATION =====
 function initNav() {
-  $$('.nav-btn[data-view]').forEach(btn => btn.addEventListener('click', () => { currentView = btn.dataset.view; currentPersonId = null; render(); }));
+  $$('.nav-btn[data-view]').forEach(btn => btn.addEventListener('click', () => { currentView = btn.dataset.view; currentPersonId = null; savePrefs(); render(); }));
   document.getElementById('overlay').addEventListener('click', (e) => { if (e.target === e.currentTarget) closeModal(); });
-  if (canEdit()) { document.getElementById('btn-undo').addEventListener('click', undo); }
-  else { document.getElementById('btn-undo').style.display = 'none'; }
+  if (canEdit()) { document.getElementById('btn-undo').addEventListener('click', undo); document.getElementById('btn-redo').addEventListener('click', redo); }
+  else { document.getElementById('btn-undo').style.display = 'none'; document.getElementById('btn-redo').style.display = 'none'; }
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-export').addEventListener('click', doExport);
   document.getElementById('btn-help').addEventListener('click', showHelp);
@@ -1111,6 +1496,12 @@ async function init() {
     document.getElementById('user-info').textContent = `${State.user.username} (${State.user.role})`;
     await API.loadAll();
     State.theme = localStorage.getItem('teamviz_theme') || State.settings.theme || 'dracula';
+    loadPrefs();
+    // Fetch my person mapping
+    try {
+      const meRes = await API.get('/me/person');
+      State.myPersonId = meRes.person_id || '';
+    } catch(e) { State.myPersonId = ''; }
     initNav();
     WS.connect();
     updateWSStatus('reconnecting');

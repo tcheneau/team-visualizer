@@ -7,16 +7,16 @@ import (
 )
 
 type Config struct {
-	Listen          string
-	DBPath          string
-	JWTSecret       []byte
-	JWTTTL          time.Duration
+	Listen            string
+	DBPath            string
+	JWTSecret         []byte
+	JWTTTL            time.Duration
 	ProxyHeaderUser   string
 	ProxyHeaderGroups string
-	AdminGroup      string
-	NormalGroup     string
-	ReadonlyGroup   string
-	WSEnabled       bool
+	AdminGroup        string
+	NormalGroup       string
+	ReadonlyGroup     string
+	WSEnabled         bool
 }
 
 func Load() (*Config, error) {

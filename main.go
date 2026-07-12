@@ -50,6 +50,9 @@ func main() {
 	root.Use(middleware.Recoverer)
 	root.Use(middleware.RequestID)
 
+	// Public ICS feed (no auth — mounted before the authed /api group)
+	root.Get("/api/ics/public/{token}", apiRouter.ServePublicICS)
+
 	// API routes (JSON)
 	root.Route("/api", func(r chi.Router) {
 		apiRouter.RegisterRoutes(r)

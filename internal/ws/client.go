@@ -20,6 +20,7 @@ type Client struct {
 	send     chan []byte
 	Username string
 	Role     string
+	PersonID string
 }
 
 // readPump reads messages from the WebSocket (mainly for ping/pong and close detection).

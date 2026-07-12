@@ -58,6 +58,7 @@ func (h *Hub) Run() {
 			h.clients[client] = true
 			h.mu.Unlock()
 			log.Printf("ws: client connected (%s), total: %d", client.Username, h.count())
+			h.broadcastPresence()
 
 		case client := <-h.unregister:
 			h.mu.Lock()
@@ -67,6 +68,7 @@ func (h *Hub) Run() {
 			}
 			h.mu.Unlock()
 			log.Printf("ws: client disconnected (%s), total: %d", client.Username, h.count())
+			h.broadcastPresence()
 
 		case msg := <-h.broadcast:
 			data, _ := json.Marshal(msg)
@@ -89,6 +91,22 @@ func (h *Hub) count() int {
 	return len(h.clients)
 }
 
+func (h *Hub) broadcastPresence() {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	type userInfo struct {
+		Username string `json:"username"`
+		Role     string `json:"role"`
+		PersonID string `json:"person_id"`
+	}
+	users := make([]userInfo, 0, len(h.clients))
+	for c := range h.clients {
+		users = append(users, userInfo{Username: c.Username, Role: c.Role, PersonID: c.PersonID})
+	}
+	// Broadcast asynchronously to avoid deadlock (we hold RLock)
+	go h.Broadcast("presence", users)
+}
+
 // Broadcast sends a message to all connected clients.
 func (h *Hub) Broadcast(msgType string, data any) {
 	raw, err := json.Marshal(data)
@@ -105,7 +123,7 @@ func (h *Hub) BroadcastRaw(msgType string, raw json.RawMessage) {
 }
 
 // ServeWS handles WebSocket upgrade requests.
-func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, username, role string) {
+func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, username, role, personID string) {
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("ws: upgrade error: %v", err)
@@ -118,6 +136,7 @@ func (h *Hub) ServeWS(w http.ResponseWriter, r *http.Request, username, role str
 		send:     make(chan []byte, 64),
 		Username: username,
 		Role:     role,
+		PersonID: personID,
 	}
 
 	h.register <- client

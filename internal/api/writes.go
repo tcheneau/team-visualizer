@@ -1,11 +1,12 @@
 package api
 
 import (
-	"time"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/teamviz/team-visualizer/internal/model"
@@ -31,6 +32,7 @@ func (r *Router) addPerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_added", result)
+	r.recordEvent(req.Context(), "person_add", result.Name, "")
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -51,6 +53,7 @@ func (r *Router) updatePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_updated", persisted)
+	r.recordEvent(req.Context(), "person_update", persisted.Name, "")
 	writeJSON(w, http.StatusOK, persisted)
 }
 
@@ -61,6 +64,7 @@ func (r *Router) deletePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_deleted", map[string]string{"id": id})
+	r.recordEvent(req.Context(), "person_delete", id, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -71,6 +75,7 @@ func (r *Router) archivePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_archived", map[string]string{"id": id})
+	r.recordEvent(req.Context(), "person_archive", id, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "archived"})
 }
 
@@ -81,16 +86,17 @@ func (r *Router) unarchivePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_unarchived", map[string]string{"id": id})
+	r.recordEvent(req.Context(), "person_unarchive", id, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "active"})
 }
 
 // ===== Planning (write) =====
 
 type setSlotReq struct {
-	PersonID string          `json:"person_id"`
-	Date     string          `json:"date"`
-	Slot     string          `json:"slot"`
-	Data     model.SlotData  `json:"data"`
+	PersonID string         `json:"person_id"`
+	Date     string         `json:"date"`
+	Slot     string         `json:"slot"`
+	Data     model.SlotData `json:"data"`
 }
 
 func (r *Router) setSlot(w http.ResponseWriter, req *http.Request) {
@@ -108,6 +114,22 @@ func (r *Router) setSlot(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_updated", body)
+	detail := body.Data.State
+	if body.Data.Away != nil {
+		detail = "away:" + body.Data.Away.Type
+	} else if len(body.Data.Projects) > 0 {
+		names := make([]string, 0, len(body.Data.Projects))
+		for _, p := range body.Data.Projects {
+			names = append(names, p.Name)
+		}
+		detail = strings.Join(names, ",")
+		if body.Data.Run {
+			detail += "+run"
+		}
+	} else if body.Data.Run {
+		detail = "run"
+	}
+	r.recordEvent(req.Context(), "planning_set", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), detail)
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -122,16 +144,17 @@ func (r *Router) clearSlot(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_cleared", body)
+	r.recordEvent(req.Context(), "planning_clear", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
 type setRangeReq struct {
-	PersonIDs []string        `json:"person_ids"`
-	StartDate string          `json:"start_date"`
-	StartSlot string          `json:"start_slot"`
-	EndDate   string          `json:"end_date"`
-	EndSlot   string          `json:"end_slot"`
-	Data      model.SlotData  `json:"data"`
+	PersonIDs []string       `json:"person_ids"`
+	StartDate string         `json:"start_date"`
+	StartSlot string         `json:"start_slot"`
+	EndDate   string         `json:"end_date"`
+	EndSlot   string         `json:"end_slot"`
+	Data      model.SlotData `json:"data"`
 }
 
 func (r *Router) setSlotRange(w http.ResponseWriter, req *http.Request) {
@@ -167,10 +190,11 @@ func (r *Router) setSlotRange(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate, "data": body.Data})
+	r.recordEvent(req.Context(), "planning_range", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"status":     "ok",
-		"slots_set":  len(refs),
-		"people":     len(body.PersonIDs),
+		"status":    "ok",
+		"slots_set": len(refs),
+		"people":    len(body.PersonIDs),
 	})
 }
 
@@ -192,6 +216,7 @@ func (r *Router) clearSlotRange(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_range_cleared", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate})
+	r.recordEvent(req.Context(), "planning_range_clear", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "slots_cleared": len(refs)})
 }
 
@@ -213,6 +238,7 @@ func (r *Router) copyWeek(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_copied", map[string]any{"person_id": body.PersonID, "to_week_start": body.ToWeekStart})
+	r.recordEvent(req.Context(), "planning_copy", fmt.Sprintf("%s -> %s", body.FromWeekStart, body.ToWeekStart), fmt.Sprintf("person %s", body.PersonID))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "copied": copied})
 }
 
@@ -243,6 +269,7 @@ func (r *Router) pruneData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_pruned", map[string]any{"weeks_old": body.WeeksOld, "deleted": deleted})
+	r.recordEvent(req.Context(), "prune", fmt.Sprintf("weeks_old %d", body.WeeksOld), fmt.Sprintf("deleted %d", deleted))
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deleted": deleted, "weeks_old": body.WeeksOld})
 }
 
@@ -252,6 +279,7 @@ func (r *Router) resetData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("data_reset", nil)
+	r.recordEvent(req.Context(), "reset", "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 
@@ -278,6 +306,7 @@ func (r *Router) addProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_added", result)
+	r.recordEvent(req.Context(), "project_add", result.Name, "")
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -298,6 +327,7 @@ func (r *Router) updateProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_updated", persisted)
+	r.recordEvent(req.Context(), "project_update", persisted.Name, "")
 	writeJSON(w, http.StatusOK, persisted)
 }
 
@@ -308,6 +338,7 @@ func (r *Router) deleteProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_deleted", map[string]string{"id": id})
+	r.recordEvent(req.Context(), "project_delete", id, "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -358,6 +389,7 @@ func (r *Router) importProjectCSV(w http.ResponseWriter, req *http.Request) {
 	}
 	r.hub.Broadcast("projects_imported", map[string]any{"created": created, "updated": updated})
 	r.hub.Broadcast("projects_imported", map[string]any{"created": created, "updated": updated})
+	r.recordEvent(req.Context(), "project_import_csv", "", fmt.Sprintf("created %d updated %d", created, updated))
 	writeJSON(w, http.StatusOK, map[string]any{"created": created, "updated": updated})
 }
 
@@ -379,6 +411,7 @@ func (r *Router) setOnCall(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("oncall_changed", body)
+	r.recordEvent(req.Context(), "oncall_set", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -393,6 +426,7 @@ func (r *Router) removeOnCall(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("oncall_changed", body)
+	r.recordEvent(req.Context(), "oncall_remove", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

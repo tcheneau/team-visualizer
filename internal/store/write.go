@@ -33,8 +33,8 @@ func (s *Store) AddPerson(p model.Person) (model.Person, error) {
 	if p.IsGuest {
 		isGuest = 1
 	}
-	_, err := s.db.Exec(`INSERT INTO people (id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		p.ID, p.Name, p.Role, p.SubTeam, p.AvatarEmoji, p.AvatarColor, p.StartDate, string(projectsJSON), p.Status, p.ArchivedDate, isGuest)
+	_, err := s.db.Exec(`INSERT INTO people (id, name, role, sub_team, avatar_emoji, avatar_color, start_date, default_projects, status, archived_date, is_guest, ics_token) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.Name, p.Role, p.SubTeam, p.AvatarEmoji, p.AvatarColor, p.StartDate, string(projectsJSON), p.Status, p.ArchivedDate, isGuest, "")
 	if err != nil {
 		return p, err
 	}
@@ -74,7 +74,7 @@ func (s *Store) UnarchivePerson(id string) error {
 
 func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error {
 	// If state is not_filled or data is empty, delete the entry
-	if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run) {
+	if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run && !data.Remote) {
 		return s.ClearSlot(personID, date, slot)
 	}
 
@@ -91,9 +91,13 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 	if data.Run {
 		runVal = 1
 	}
+	remoteVal := 0
+	if data.Remote {
+		remoteVal = 1
+	}
 
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects) VALUES (?,?,?,?,?,?,?,?)`,
-		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON))
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote) VALUES (?,?,?,?,?,?,?,?,?)`,
+		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal)
 	return err
 }
 
@@ -116,7 +120,7 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 		return err
 	}
 	for _, ref := range refs {
-		if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run) {
+		if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run && !data.Remote) {
 			_, err = tx.Exec("DELETE FROM planning WHERE person_id=? AND date=? AND slot=?", ref.PersonID, ref.Date, ref.Slot)
 		} else {
 			awayType, awayNote := "", ""
@@ -132,8 +136,12 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Run {
 				runVal = 1
 			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects) VALUES (?,?,?,?,?,?,?,?)`,
-				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON))
+			remoteVal := 0
+			if data.Remote {
+				remoteVal = 1
+			}
+			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote) VALUES (?,?,?,?,?,?,?,?,?)`,
+				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -256,8 +264,8 @@ func (s *Store) AddProject(p model.Project) (model.Project, error) {
 	if p.Status == "" {
 		p.Status = "unstarted"
 	}
-	_, err := s.db.Exec(`INSERT INTO projects (id, name, emoji, description, url, start_date, end_date, status) VALUES (?,?,?,?,?,?,?,?)`,
-		p.ID, p.Name, p.Emoji, p.Description, p.URL, p.StartDate, p.EndDate, p.Status)
+	_, err := s.db.Exec(`INSERT INTO projects (id, name, emoji, description, url, start_date, end_date, status, team_lead) VALUES (?,?,?,?,?,?,?,?,?)`,
+		p.ID, p.Name, p.Emoji, p.Description, p.URL, p.StartDate, p.EndDate, p.Status, p.TeamLead)
 	if err != nil {
 		return p, err
 	}
@@ -265,8 +273,8 @@ func (s *Store) AddProject(p model.Project) (model.Project, error) {
 }
 
 func (s *Store) UpdateProject(id string, p model.Project) error {
-	_, err := s.db.Exec(`UPDATE projects SET name=?, emoji=?, description=?, url=?, start_date=?, end_date=?, status=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
-		p.Name, p.Emoji, p.Description, p.URL, p.StartDate, p.EndDate, p.Status, id)
+	_, err := s.db.Exec(`UPDATE projects SET name=?, emoji=?, description=?, url=?, start_date=?, end_date=?, status=?, team_lead=?, updated_at=CURRENT_TIMESTAMP WHERE id=?`,
+		p.Name, p.Emoji, p.Description, p.URL, p.StartDate, p.EndDate, p.Status, p.TeamLead, id)
 	return err
 }
 
@@ -468,7 +476,7 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 			projs = []model.ProjectAssign{}
 		}
 		if e := s.SetSlot(ep.PersonID, ep.Date, ep.Slot, model.SlotData{
-			State: ep.State, Away: away, Projects: projs, Run: ep.Run,
+			State: ep.State, Away: away, Projects: projs, Run: ep.Run, Remote: ep.Remote,
 		}); e != nil {
 			return created, updated, fmt.Errorf("import planning %s %s %s: %w", ep.PersonID, ep.Date, ep.Slot, e)
 		}

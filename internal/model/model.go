@@ -30,6 +30,7 @@ type Person struct {
 	Status          string   `json:"status"`
 	ArchivedDate    string   `json:"archived_date"`
 	IsGuest         bool     `json:"is_guest"`
+	ICS_TOKEN       string   `json:"ics_token"`
 }
 
 type SlotData struct {
@@ -37,6 +38,7 @@ type SlotData struct {
 	Away     *AwayData       `json:"away"`
 	Projects []ProjectAssign `json:"projects"`
 	Run      bool            `json:"run"`
+	Remote   bool            `json:"remote"`
 }
 
 type AwayData struct {
@@ -50,10 +52,10 @@ type ProjectAssign struct {
 }
 
 type PlanningEntry struct {
-	PersonID string    `json:"person_id"`
-	Date     string    `json:"date"`
-	Slot     string    `json:"slot"`
-	Data     SlotData  `json:"data"`
+	PersonID string   `json:"person_id"`
+	Date     string   `json:"date"`
+	Slot     string   `json:"slot"`
+	Data     SlotData `json:"data"`
 }
 
 type Project struct {
@@ -65,6 +67,7 @@ type Project struct {
 	StartDate   string `json:"start_date"`
 	EndDate     string `json:"end_date"`
 	Status      string `json:"status"`
+	TeamLead    string `json:"team_lead"`
 }
 
 type Settings struct {
@@ -75,6 +78,7 @@ type Settings struct {
 	RunTargetPersons int    `json:"run_target_persons"`
 	Theme            string `json:"theme"`
 	ExportCounter    int    `json:"export_counter"`
+	HolidayCountry   string `json:"holiday_country"`
 }
 
 type Holiday struct {
