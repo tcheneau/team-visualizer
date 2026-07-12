@@ -1,5 +1,13 @@
 # Team Activity Visualizer
 
+## Disclamer
+
+This repository contains an application that has enterely been vibe-coded by a LLM (mostly GLM 5.2) as part of an experiment. The experiment is to find out how mature and usable an application it can create.
+
+If like some, you can't stand AI generated content: I can perfectly understand you, and I invite you to move along.
+
+## Summary
+
 A self-hosted web application for planning and visualising a team's activity across away time, project time, run time, and remote work — with real-time collaboration, role-based access, and a full Keycloak + oauth2-proxy demo setup.
 
 ## Quick Start
@@ -271,3 +279,14 @@ TVZ_JWT_SECRET=testsecret ./test-api.sh
 ## Legacy app
 
 The original single-file HTML5 prototype is served at `/legacy/` for prototyping. It uses browser localStorage (not the Go backend's database).
+
+## Licence choice
+
+This app has been vibe-coded, so Public Domain seems like a suitable licence.
+
+## Licensing
+
+[![CC0](https://mirrors.creativecommons.org/presskit/buttons/88x31/svg/cc-zero.svg)](https://creativecommons.org/publicdomain/zero/1.0/)
+
+This work is released into the public domain under the [CC0 1.0 Universal](LICENSE) license.
+
