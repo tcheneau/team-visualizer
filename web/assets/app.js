@@ -13,6 +13,7 @@ const clone = o => JSON.parse(JSON.stringify(o));
 const sum = arr => arr.reduce((a,b)=>a+b,0);
 const escapeHtml = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
 const esc = escapeHtml;
+const escTitle = s => escapeHtml(s).replace(/\n/g,'&#10;');
 
 // Safe confirm helpers — look up names from State by id, avoiding interpolation XSS
 function confirmArchivePerson(id){ const p=getPerson(id); if(p&&confirm('Archive '+p.name+'?')){ API.post('/people/'+id+'/archive').then(()=>{ if(p){p.status='archived';p.archived_date=fmtDate(new Date());} render();}) } }
@@ -251,21 +252,30 @@ async function redo() {
 
 // ===== SLOT HELPERS =====
 function getSlotClass(slotData) {
-  if (!slotData || slotData.state === 'not_filled') return 'not-filled';
-  if (slotData.state === 'undetermined') { let cls = 'undetermined'; if (slotData.remote) cls += ' remote'; return cls; }
-  if (slotData.away) { let cls = 'away'; if (slotData.remote) cls += ' remote'; return cls; }
-  if (slotData.run && slotData.projects && slotData.projects.length > 0) { let cls = 'project run'; if (slotData.remote) cls += ' remote'; return cls; }
-  if (slotData.run) { let cls = 'run'; if (slotData.remote) cls += ' remote'; return cls; }
-  if (slotData.projects && slotData.projects.length > 0) { let cls = 'project'; if (slotData.remote) cls += ' remote'; return cls; }
+  if (!slotData || slotData.state === 'not_filled') {
+    if (slotData && slotData.remote) return 'not-filled remote';
+    if (slotData && slotData.offsite) return 'not-filled offsite';
+    return 'not-filled';
+  }
+  const flagCls = slotData.remote ? ' remote' : slotData.offsite ? ' offsite' : '';
+  if (slotData.state === 'undetermined') return 'undetermined' + flagCls;
+  if (slotData.away) return 'away' + flagCls;
+  if (slotData.incident) return 'incident' + flagCls;
+  if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run' + flagCls;
+  if (slotData.run) return 'run' + flagCls;
+  if (slotData.projects && slotData.projects.length > 0) return 'project' + flagCls;
   if (slotData.remote) return 'not-filled remote';
+  if (slotData.offsite) return 'not-filled offsite';
   return 'not-filled';
 }
 function getCellLabel(slotData) {
   if (!slotData || slotData.state === 'not_filled') return '?';
-  if (slotData.state === 'undetermined') return (slotData.remote ? '🏠?' : '?');
-  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return (slotData.remote ? '🏠' : '') + (a[slotData.away.type] || slotData.away.type); }
+  // Note: remote/off-site icons are added via CSS ::before on .cell-label,
+  // so we do NOT include them in the text here (avoids double icons).
+  if (slotData.state === 'undetermined') return '?';
+  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return (a[slotData.away.type] || slotData.away.type); }
+  if (slotData.incident) return '⚠';
   let parts = [];
-  if (slotData.remote) parts.push('🏠');
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
   if (slotData.run) parts.push('R');
   return parts.join('/');
@@ -275,6 +285,7 @@ function getMergeKey(slotData, weekIndex) {
   if (!slotData || slotData.state === 'not_filled') return wk + 'nf';
   if (slotData.state === 'undetermined') return wk + 'und';
   if (slotData.away) return wk + 'away:' + slotData.away.type;
+  if (slotData.incident) return wk + 'incident:' + (slotData.incident.text || '');
   if (slotData.projects && slotData.projects.length === 1 && !slotData.run) return wk + 'proj:' + slotData.projects[0].name;
   if (slotData.projects && slotData.projects.length === 1 && slotData.run) return wk + 'projrun:' + slotData.projects[0].name;
   if (slotData.run && (!slotData.projects || slotData.projects.length === 0)) return wk + 'run';
@@ -283,21 +294,53 @@ function getMergeKey(slotData, weekIndex) {
 function getSlotTitle(person, dateStr, slot, slotData) {
   const p = typeof person === 'string' ? getPerson(person) : person;
   const name = p ? p.name : person;
-  if (!slotData || slotData.state === 'not_filled') return `${name} · ${dateStr} ${slot} · Not filled`;
-  if (slotData.state === 'undetermined') return `${name} · ${dateStr} ${slot} · Undetermined project`;
-  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}${slotData.remote ? ' + Remote' : ''}`;
-  let parts = [];
-  if (slotData.projects) slotData.projects.forEach(p => parts.push(`${p.name} ${p.pct}%`));
-  if (slotData.run) parts.push('Run');
-  if (slotData.remote) parts.push('Remote');
-  return `${name} · ${dateStr} ${slot} · ${parts.join(' + ')}`;
+  const flagTxt = slotData && slotData.remote ? ' + Remote' : slotData && slotData.offsite ? ' + Off-site' : '';
+  if (!slotData || slotData.state === 'not_filled') return `${name} · ${dateStr} ${slot} · Not filled${flagTxt}`;
+  if (slotData.state === 'undetermined') return `${name} · ${dateStr} ${slot} · Undetermined project${flagTxt}`;
+  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}${flagTxt}`;
+  if (slotData.incident) return `${name} · ${dateStr} ${slot} · Incident${slotData.incident.text ? ': ' + slotData.incident.text : ''}${flagTxt}`;
+  // Projects — multi-line with descriptions (Feature 1)
+  let lines = [`${name} · ${dateStr} ${slot}`];
+  if (slotData.projects) slotData.projects.forEach(pr => {
+    const proj = getProjectByName(pr.name);
+    const desc = proj && proj.description ? proj.description : '';
+    const emoji = proj && proj.emoji ? proj.emoji + ' ' : '';
+    lines.push(desc ? `${emoji}${pr.name} (${pr.pct}%): ${desc}` : `${emoji}${pr.name} (${pr.pct}%)`);
+  });
+  if (slotData.run) lines.push('Run duty');
+  if (slotData.remote) lines.push('Remote');
+  else if (slotData.offsite) lines.push('Off-site');
+  return lines.join('\n');
+}
+// HTML version of getSlotTitle for the custom tooltip (renders emoji in color)
+function getSlotTitleHtml(person, dateStr, slot, slotData) {
+  const p = typeof person === 'string' ? getPerson(person) : person;
+  const name = p ? p.name : person;
+  const flagTxt = slotData && slotData.remote ? ' + Remote' : slotData && slotData.offsite ? ' + Off-site' : '';
+  if (!slotData || slotData.state === 'not_filled') return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Not filled${esc(flagTxt)}</div>`;
+  if (slotData.state === 'undetermined') return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Undetermined project${esc(flagTxt)}</div>`;
+  if (slotData.away) return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Away: ${esc(slotData.away.type)}${slotData.away.note ? ' ('+esc(slotData.away.note)+')' : ''}${esc(flagTxt)}</div>`;
+  if (slotData.incident) return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Incident${slotData.incident.text ? ': '+esc(slotData.incident.text) : ''}${esc(flagTxt)}</div>`;
+  let html = `<div class="tt-header">${esc(name)} · ${dateStr} ${slot}</div>`;
+  if (slotData.projects) slotData.projects.forEach(pr => {
+    const proj = getProjectByName(pr.name);
+    const desc = proj && proj.description ? proj.description : '';
+    const emoji = proj && proj.emoji ? proj.emoji + ' ' : '';
+    html += `<div class="tt-line">${emoji}${esc(pr.name)} (${pr.pct}%)${desc ? ': '+esc(desc) : ''}</div>`;
+  });
+  if (slotData.run) html += '<div class="tt-line">🏃 Run duty</div>';
+  if (slotData.remote) html += '<div class="tt-line">🏠 Remote</div>';
+  else if (slotData.offsite) html += '<div class="tt-line">🏢 Off-site</div>';
+  return html;
 }
 function getSlotLabel(slotData) {
   if (!slotData || slotData.state === 'not_filled') return '—';
-  if (slotData.state === 'undetermined') return (slotData.remote ? '🏠?' : '?');
-  if (slotData.away) return (slotData.remote ? '🏠 ' : '') + slotData.away.type.replace(/_/g,' ');
+  const flagIcon = slotData.remote ? '🏠' : slotData.offsite ? '🏢' : '';
+  if (slotData.state === 'undetermined') return (flagIcon ? flagIcon + ' ?' : '?');
+  if (slotData.away) return (flagIcon ? flagIcon + ' ' : '') + slotData.away.type.replace(/_/g,' ');
+  if (slotData.incident) return (flagIcon ? flagIcon + ' ' : '') + 'Incident' + (slotData.incident.text ? ': ' + slotData.incident.text : '');
   let parts = [];
-  if (slotData.remote) parts.push('🏠');
+  if (flagIcon) parts.push(flagIcon);
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
   if (slotData.run) parts.push('🏃');
   return parts.join(' ') || '—';
@@ -418,6 +461,7 @@ function render() {
     case 'admin': if (isAdmin()) renderAdmin(main); else renderSettings(main); break;
     case 'workload': renderWorkload(main); break;
     case 'activity': renderActivity(main); break;
+    case 'incidents': renderIncidents(main); break;
     case 'myweek': renderMyWeek(main); break;
     case 'users': if (isAdmin()) renderUsers(main); else renderSettings(main); break;
     default: renderTeamGrid(main);
@@ -560,7 +604,7 @@ function renderTeamGrid(container) {
       let bgStyle = '';
       if (cls.includes('project')) { const bg = projectColorBg(sd); if (bg) bgStyle = ` style="background:${bg}"`; }
       const onmousedown = canEdit() ? ` onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})"` : '';
-      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${escapeHtml(getSlotTitle(p, sl.date, sl.slot, sd))}"${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
+      html += `<td class="half-day ${cls}${sep}${mergeCls}${onCallCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown}${bgStyle}>${showLabel ? `<span class="cell-label">${escapeHtml(label)}</span>` : ''}</td>`;
       prevMergeKey = mk;
     });
     html += '</tr>';
@@ -596,7 +640,10 @@ function renderTeamGrid(container) {
     <span><span class="half-day project" style="display:inline-block;width:12px;height:12px"></span> Project</span>
     <span><span class="half-day run" style="display:inline-block;width:12px;height:12px"></span> Run</span>
     <span><span class="half-day undetermined" style="display:inline-block;width:12px;height:12px"></span> Undetermined</span>
+    <span><span class="half-day incident" style="display:inline-block;width:12px;height:12px"></span> Incident</span>
     <span><span class="half-day not-filled" style="display:inline-block;width:12px;height:12px"></span> Not filled</span>
+    <span><span class="half-day not-filled remote" style="display:inline-block;width:12px;height:12px"></span> 🏠 Remote</span>
+    <span><span class="half-day not-filled offsite" style="display:inline-block;width:12px;height:12px"></span> 🏢 Off-site</span>
   </div>`;
   container.innerHTML = html;
 }
@@ -662,15 +709,15 @@ function renderAvailability(container) {
     const amCls = getSlotClass(amSd), pmCls = getSlotClass(pmSd);
     const amBg = amCls.includes('project') && projectColorBg(amSd) ? ` style="background:${projectColorBg(amSd)}"` : '';
     const pmBg = pmCls.includes('project') && projectColorBg(pmSd) ? ` style="background:${projectColorBg(pmSd)}"` : '';
-    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run` : (rem+pn||'Available'); }
+    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run` : (rem+pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
     html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
   });
   html += '</div>';
-  let away=0,run=0,proj=0,nf=0,und=0;
-  people.forEach(p => ['am','pm'].forEach(slot => { const sd = getSlot(p.id, selDate, slot); if (!sd||sd.state==='not_filled') nf++; else if (sd.state==='undetermined') und++; else if (sd.away) away++; else if (sd.run) run++; else proj++; }));
-  html += `<h3 style="margin-top:20px">Day Summary — ${dayName} ${selDate}</h3><div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.85rem"><span style="color:var(--slot-away)">${away} away</span><span style="color:var(--slot-run)">${run} run</span><span style="color:var(--slot-project)">${proj} project</span><span style="color:var(--fg-muted)">${und} undetermined</span><span style="color:var(--fg-muted)">${nf} unassigned</span></div>`;
+  let away=0,run=0,proj=0,nf=0,und=0,inc=0;
+  people.forEach(p => ['am','pm'].forEach(slot => { const sd = getSlot(p.id, selDate, slot); if (!sd||sd.state==='not_filled') nf++; else if (sd.state==='undetermined') und++; else if (sd.away) away++; else if (sd.incident) inc++; else if (sd.run) run++; else proj++; }));
+  html += `<h3 style="margin-top:20px">Day Summary — ${dayName} ${selDate}</h3><div style="display:flex;gap:12px;flex-wrap:wrap;font-size:.85rem"><span style="color:var(--slot-away)">${away} away</span><span style="color:var(--slot-run)">${run} run</span><span style="color:var(--slot-project)">${proj} project</span><span style="color:var(--slot-incident-line)">${inc} incident</span><span style="color:var(--fg-muted)">${und} undetermined</span><span style="color:var(--fg-muted)">${nf} unassigned</span></div>`;
   container.innerHTML = html;
 }
 
@@ -699,7 +746,7 @@ function renderGuests(container) {
       const showLabel = !isMergedCont || cls.includes('not-filled');
       let bgStyle = ''; if (cls.includes('project')) { const bg = projectColorBg(sd); if (bg) bgStyle = ` style="background:${bg}"`; }
       const onmousedown = canEdit() ? ` onmousedown="startDrag(event,'${p.id}','${sl.date}','${sl.slot}',${rowIdx},${colIdx})"` : '';
-      html += `<td class="half-day ${cls}${sep}${mergeCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown} title="${escapeHtml(getSlotTitle(p, sl.date, sl.slot, sd))}"${bgStyle}>${showLabel?`<span class="cell-label">${escapeHtml(label)}</span>`:''}</td>`;
+      html += `<td class="half-day ${cls}${sep}${mergeCls}" data-person="${p.id}" data-date="${sl.date}" data-slot="${sl.slot}" data-row="${rowIdx}" data-col="${colIdx}"${onmousedown}${bgStyle}>${showLabel?`<span class="cell-label">${escapeHtml(label)}</span>`:''}</td>`;
       prevMergeKey = mk;
     });
     html += '</tr>';
@@ -857,7 +904,7 @@ function renderAdmin(container) {
 // ===== WORKLOAD VIEW (all roles) =====
 
 // Half-day workload value per the spec:
-// not filled / away = 0; project(s) = sum of pct; project(s)+run = sum of pct; run only = 100; undetermined = 100.
+// not filled / away / incident = 0; project(s) = sum of pct; project(s)+run = sum of pct; run only = 100; undetermined = 100.
 function halfDayValue(sd) {
   if (!sd || sd.state === 'not_filled') return 0;
   if (sd.away) return 0;
@@ -866,7 +913,7 @@ function halfDayValue(sd) {
   if (sd.run) return 100;
   return 0;
 }
-// Half-day presence: away = 0, everything else (not filled, project, run, undetermined) = 100.
+// Half-day presence: away = 0, everything else (not filled, project, run, undetermined, incident) = 100.
 function halfDayPresence(sd) {
   if (sd && sd.away) return 0;
   return 100;
@@ -920,6 +967,22 @@ function renderWorkload(container) {
     });
   });
   html += '</tr>';
+  // Off-site percentage summary row (per day)
+  html += '<tr class="summary-row"><td class="person-col" style="font-size:.7rem">🏢 Off-site</td>';
+  weeks.forEach((w, wi) => {
+    const days = getWeekDays(w);
+    days.forEach((d, di) => {
+      if (di >= 5 && !_showWeekend) return;
+      const ds = fmtDate(d);
+      let offsiteCount = 0;
+      people.forEach(p => { const amSd = getSlot(p.id, ds, 'am'), pmSd = getSlot(p.id, ds, 'pm'); if ((amSd && amSd.offsite) || (pmSd && pmSd.offsite)) offsiteCount++; });
+      const pct = people.length > 0 ? Math.round(offsiteCount / people.length * 100) : 0;
+      const sep = (di === 0 && wi > 0) ? ' week-start' : '';
+      const color = pct > 0 ? 'var(--offsite-border)' : 'var(--fg-muted)';
+      html += `<td class="${sep}" style="font-size:.65rem;padding:2px 4px;color:${color}">${pct > 0 ? pct + '%' : '\u2014'}</td>`;
+    });
+  });
+  html += '</tr>';
   // Weekly presence summary row (per week, team average): away = 0, everything else = 100
   html += '<tr class="summary-row"><td class="person-col" style="font-size:.7rem">Presence</td>';
   weeks.forEach((w, wi) => {
@@ -968,6 +1031,36 @@ function renderActivityList(container) {
       <strong>${esc(e.action||'')}</strong>
       ${e.target ? `<code style="font-size:.7rem;color:var(--fg-muted)">${esc(e.target)}</code>` : ''}
       ${e.detail ? `<span style="color:var(--fg-muted);font-size:.75rem">— ${esc(e.detail)}</span>` : ''}
+    </div>`;
+  });
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+// ===== INCIDENTS VIEW (all roles) =====
+function renderIncidents(container) {
+  if (!Array.isArray(State.incidents)) State.incidents = [];
+  if (State.incidents.length > 0) renderIncidentsList(container);
+  else container.innerHTML = '<h2>Incidents</h2><p style="color:var(--fg-muted)">Loading…</p>';
+  API.get('/incidents').then(d => { State.incidents = d || []; renderIncidentsList(container); });
+}
+function renderIncidentsList(container) {
+  let html = '<h2>Incidents</h2><div style="margin-bottom:8px;display:flex;gap:8px;align-items:center"><button onclick="API.get(\'/incidents\').then(d=>{State.incidents=d||[];render()})">🔄 Refresh</button>';
+  if (State.incidents.length > 0) html += `<span style="color:var(--fg-muted);font-size:.85rem">${State.incidents.length} incident${State.incidents.length>1?'s':''} recorded</span>`;
+  html += '</div>';
+  if (State.incidents.length === 0) {
+    html += '<p style="color:var(--fg-muted)">No incidents recorded.</p>';
+    container.innerHTML = html;
+    return;
+  }
+  html += '<div style="display:flex;flex-direction:column;gap:4px;max-height:70vh;overflow-y:auto">';
+  State.incidents.forEach(inc => {
+    const slotLabel = inc.slot === 'am' ? 'AM' : 'PM';
+    html += `<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--slot-incident-line);border-radius:4px;padding:6px 10px;font-size:.85rem;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <span style="color:var(--fg-muted);font-size:.75rem;min-width:110px;white-space:nowrap">${inc.date} ${slotLabel}</span>
+      <span style="min-width:120px;cursor:pointer;color:var(--accent)" onclick="showIndividual('${inc.person_id}')" title="Click to view this person's schedule">${esc(inc.avatar_emoji||'👤')} ${esc(inc.person_name)}</span>
+      <span style="color:var(--slot-incident-line);font-weight:700;font-size:1rem">⚠</span>
+      <span style="flex:1;min-width:200px">${esc(inc.incident_text)}</span>
     </div>`;
   });
   html += '</div>';
@@ -1108,22 +1201,25 @@ document.addEventListener('mousemove', extendDrag);
 // ===== CELL EDITOR =====
 function openCellEditor(personId, date, slot) {
   editorPersonId = personId; editorDate = date; editorSlot = slot;
-  const slotData = getSlot(personId, date, slot) || { state: 'not_filled', away: null, projects: [], run: false };
+  const slotData = getSlot(personId, date, slot) || { state: 'not_filled', away: null, incident: null, projects: [], run: false, remote: false, offsite: false };
   const p = getPerson(personId); const name = p ? p.name : personId;
-  const isAway = slotData && slotData.away; const isUndetermined = slotData && slotData.state === 'undetermined'; const activeTab = isUndetermined ? 'undetermined' : isAway ? 'away' : 'project';
+  const isAway = slotData && slotData.away; const isUndetermined = slotData && slotData.state === 'undetermined'; const isIncident = slotData && slotData.incident;
+  const activeTab = isUndetermined ? 'undetermined' : isAway ? 'away' : isIncident ? 'incident' : 'project';
   const projects = (slotData && slotData.projects) ? clone(slotData.projects) : [{ name: '', pct: 100 }];
   const runChecked = slotData && slotData.run;
+  const currentIncidentText = isIncident ? (slotData.incident.text || '') : '';
   let html = `<div style="font-weight:600;margin-bottom:8px">${name} · ${date} ${slot.toUpperCase()}</div>
-  <div class="tabs"><button class="${activeTab==='project'?'active':''}" data-tab="project" onclick="switchEditorTab('project')">Project</button><button class="${activeTab==='away'?'active':''}" data-tab="away" onclick="switchEditorTab('away')">Away</button><button class="${activeTab==='undetermined'?'active':''}" data-tab="undetermined" onclick="switchEditorTab('undetermined')">Undetermined</button><button class="${activeTab==='clear'?'active':''}" data-tab="clear" onclick="switchEditorTab('clear')">Clear</button></div>`;
+  <div class="tabs"><button class="${activeTab==='project'?'active':''}" data-tab="project" onclick="switchEditorTab('project')">Project</button><button class="${activeTab==='away'?'active':''}" data-tab="away" onclick="switchEditorTab('away')">Away</button><button class="${activeTab==='incident'?'active':''}" data-tab="incident" onclick="switchEditorTab('incident')">Incident</button><button class="${activeTab==='undetermined'?'active':''}" data-tab="undetermined" onclick="switchEditorTab('undetermined')">Undetermined</button><button class="${activeTab==='clear'?'active':''}" data-tab="clear" onclick="switchEditorTab('clear')">Clear</button></div>`;
   html += `<div id="editor-tab-project" class="tab-content ${activeTab!=='project'?'hidden':''}"><div id="project-list">`;
   projects.forEach((proj, i) => { html += `<div class="project-row"><input type="text" value="${proj.name}" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="${proj.pct}" onchange="updatePctTotal()"><span>%</span>${projects.length>1?`<button onclick="removeProject(${i})">✕</button>`:''}</div>`; });
   html += `</div><button onclick="addEditorProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button><div class="pct-total" id="pct-total">Total: ${sum(projects.map(p=>p.pct))}%</div><div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${runChecked?'checked':''} onchange="window.editorRunToggle=this.checked"> 🏃 Run duty</label></div></div>`;
   const awayTypes = ['vacation','public_holiday','sick_leave','training','conference','parental_leave','sabbatical','other'];
   const currentAway = isAway ? slotData.away.type : ''; const currentNote = isAway ? (slotData.away.note || '') : '';
   html += `<div id="editor-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="away-type">${awayTypes.map(t=>`<option value="${t}" ${currentAway===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div></div>`;
+  html += `<div id="editor-tab-incident" class="tab-content ${activeTab!=='incident'?'hidden':''}"><div class="form-row"><label>Text (e.g. ticket number)</label><input type="text" id="incident-text" value="${currentIncidentText}" placeholder="e.g. INC-1234"></div><p style="color:var(--fg-muted);padding:4px 0">Mark this half-day as incident work. Mutually exclusive with project/run/away.</p></div>`;
   html += `<div id="editor-tab-undetermined" class="tab-content ${activeTab!=='undetermined'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Mark this half-day as "Project (TBD)".</p></div>
   <div id="editor-tab-clear" class="tab-content ${activeTab!=='clear'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Clear this half-day (set to not filled).</p></div>
-  <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${slotData&&slotData.remote?'checked':''} onchange="window.editorRemoteToggle=this.checked"> 🏠 Remote</label></div>
+  <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="editor-remote" ${slotData&&slotData.remote?'checked':''} onchange="editorFlagToggle('remote',this.checked)"> 🏠 Remote</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:4px"><input type="checkbox" id="editor-offsite" ${slotData&&slotData.offsite?'checked':''} onchange="editorFlagToggle('offsite',this.checked)"> 🏢 Off-site</label></div>
   <div class="form-actions"><button onclick="closeCellEditor()">Cancel</button><button onclick="saveCellEditor()" class="primary">Save</button></div>`;
   html += projectNamesDatalist();
   const editor = document.getElementById('cell-editor');
@@ -1131,8 +1227,18 @@ function openCellEditor(personId, date, slot) {
   editor.style.top = '50%'; editor.style.left = '50%'; editor.style.transform = 'translate(-50%,-50%)';
   window.editorRunToggle = runChecked;
   window.editorRemoteToggle = slotData && slotData.remote;
+  window.editorOffsiteToggle = slotData && slotData.offsite;
 }
-function switchEditorTab(tab) { const editor = document.getElementById('cell-editor'); editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden')); const btn = editor.querySelector(`.tabs button[data-tab="${tab}"]`); if (btn) btn.classList.add('active'); const tc = document.getElementById(`editor-tab-${tab}`); if (tc) tc.classList.remove('hidden'); if (tab === 'clear') { const rcb = editor.querySelector('input[onchange*="editorRemoteToggle"]'); if (rcb) { rcb.checked = false; window.editorRemoteToggle = false; } } }
+function editorFlagToggle(flag, checked) {
+  if (flag === 'remote') {
+    window.editorRemoteToggle = checked;
+    if (checked) { window.editorOffsiteToggle = false; const cb = document.getElementById('editor-offsite'); if (cb) cb.checked = false; }
+  } else {
+    window.editorOffsiteToggle = checked;
+    if (checked) { window.editorRemoteToggle = false; const cb = document.getElementById('editor-remote'); if (cb) cb.checked = false; }
+  }
+}
+function switchEditorTab(tab) { const editor = document.getElementById('cell-editor'); editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden')); const btn = editor.querySelector(`.tabs button[data-tab="${tab}"]`); if (btn) btn.classList.add('active'); const tc = document.getElementById(`editor-tab-${tab}`); if (tc) tc.classList.remove('hidden'); if (tab === 'clear') { const rcb = document.getElementById('editor-remote'); if (rcb) { rcb.checked = false; window.editorRemoteToggle = false; } const ocb = document.getElementById('editor-offsite'); if (ocb) { ocb.checked = false; window.editorOffsiteToggle = false; } } }
 function addEditorProject() { const list = document.getElementById('project-list'); const div = document.createElement('div'); div.className = 'project-row'; div.innerHTML = `<input type="text" value="" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="50" onchange="updatePctTotal()"><span>%</span><button onclick="removeProject(Array.from(this.parentElement.parentElement.children).indexOf(this.parentElement))">✕</button>`; list.appendChild(div); updatePctTotal(); }
 function removeProject(idx) { const rows = document.getElementById('project-list').children; if (rows.length <= 1) return; rows[idx].remove(); updatePctTotal(); }
 function updatePctTotal() { const rows = document.getElementById('project-list').children; let total = 0; Array.from(rows).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
@@ -1141,7 +1247,11 @@ async function saveCellEditor() {
   if (activeTab === 'clear') {
     pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
     if (window.editorRemoteToggle) {
-      const data = { state: 'filled', away: null, projects: [], run: false, remote: true };
+      const data = { state: 'filled', away: null, incident: null, projects: [], run: false, remote: true, offsite: false };
+      await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+      State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    } else if (window.editorOffsiteToggle) {
+      const data = { state: 'filled', away: null, incident: null, projects: [], run: false, remote: false, offsite: true };
       await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
       State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
     } else {
@@ -1152,7 +1262,15 @@ async function saveCellEditor() {
   }
   if (activeTab === 'undetermined') {
     pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: 'undetermined', away: null, projects: [], run: false, remote: !!window.editorRemoteToggle };
+    const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
+    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
+    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
+    closeCellEditor(); render(); return;
+  }
+  if (activeTab === 'incident') {
+    const text = document.getElementById('incident-text').value.trim();
+    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
+    const data = { state: 'filled', away: null, incident: { text }, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
     closeCellEditor(); render(); return;
@@ -1160,7 +1278,7 @@ async function saveCellEditor() {
   if (activeTab === 'away') {
     const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
     pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: 'filled', away: { type, note }, projects: [], run: false, remote: !!window.editorRemoteToggle };
+    const data = { state: 'filled', away: { type, note }, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
     closeCellEditor(); render(); return;
@@ -1170,12 +1288,12 @@ async function saveCellEditor() {
   Array.from(rows).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
   if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
   pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-  const data = { state: projects.length > 0 || window.editorRunToggle || window.editorRemoteToggle ? 'filled' : 'not_filled', away: null, projects, run: !!window.editorRunToggle, remote: !!window.editorRemoteToggle };
+  const data = { state: projects.length > 0 || window.editorRunToggle || window.editorRemoteToggle || window.editorOffsiteToggle ? 'filled' : 'not_filled', away: null, incident: null, projects, run: !!window.editorRunToggle, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
   await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
   State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
   closeCellEditor(); render();
 }
-async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, projects: [], run: false, remote: !!window.editorRemoteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
+async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
 async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
 function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
 
@@ -1192,9 +1310,11 @@ function openRangeEditor(cells) {
     <button onclick="addRangeProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
     <div class="pct-total" id="range-pct-total">Total: 100%</div>
     <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty</label></div>
-    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-remote" style="width:auto"> 🏠 Remote</label></div>
+    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-remote" style="width:auto" onchange="if(this.checked){document.getElementById('range-offsite').checked=false}"> 🏠 Remote</label></div>
+    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-offsite" style="width:auto" onchange="if(this.checked){document.getElementById('range-remote').checked=false}"> 🏢 Off-site</label></div>
     <div style="margin:12px 0;border-top:1px solid var(--border)"></div>
     <div class="form-row"><label>Or set Away type:</label><select id="range-away-type"><option value="">— None —</option><option value="vacation">Vacation</option><option value="public_holiday">Public holiday</option><option value="sick_leave">Sick leave</option><option value="training">Training</option><option value="conference">Conference</option><option value="parental_leave">Parental leave</option><option value="sabbatical">Sabbatical</option><option value="other">Other</option></select></div>
+    <div class="form-row"><label>Or set Incident text:</label><input type="text" id="range-incident-text" placeholder="e.g. INC-1234"></div>
     <div class="form-actions"><button onclick="closeModal()">Cancel</button><button onclick="applyRangeUndetermined()">Set Undetermined</button><button onclick="applyRangeClear()">Clear All</button><button class="primary" onclick="applyRangeEditor()">Apply to All</button></div>`;
   html += projectNamesDatalist();
   showModal(html);
@@ -1204,8 +1324,8 @@ function removeRangeProject(row) { const list = document.getElementById('range-p
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const data = awayType ? {state:'filled',away:{type:awayType,note:''},projects:[],run:false,remote} : projects.length > 0 ? {state:'filled',away:null,projects,run,remote} : run ? {state:'filled',away:null,projects:[],run:true,remote} : remote ? {state:'filled',away:null,projects:[],run:false,remote:true} : {state:'not_filled',away:null,projects:[],run:false}; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,projects:[],run:false} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const incidentText = document.getElementById('range-incident-text') ? document.getElementById('range-incident-text').value.trim() : ''; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); let data; if (awayType) { data = {state:'filled',away:{type:awayType,note:''},incident:null,projects:[],run:false,remote,offsite}; } else if (incidentText) { data = {state:'filled',away:null,incident:{text:incidentText},projects:[],run:false,remote,offsite}; } else if (projects.length > 0) { data = {state:'filled',away:null,incident:null,projects,run,remote,offsite}; } else if (run) { data = {state:'filled',away:null,incident:null,projects:[],run:true,remote,offsite}; } else if (remote) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:true,offsite:false}; } else if (offsite) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:false,offsite:true}; } else { data = {state:'not_filled',away:null,incident:null,projects:[],run:false}; } await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const remote = document.getElementById('range-remote') ? document.getElementById('range-remote').checked : false; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,incident:null,projects:[],run:false,remote,offsite} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
 
 // ===== MODAL SYSTEM =====
@@ -1376,8 +1496,9 @@ async function downloadICS(personId) {
       const esc = s => String(s||'').replace(/\\/g,'\\\\').replace(/,/g,'\\,').replace(/;/g,'\\;').replace(/\n/g,'\\n');
       if (sd.state === 'undetermined') { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: undetermined')}\r\nEND:VEVENT\r\n`); return; }
       if (sd.away) { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Away: '+sd.away.type)}\r\nDESCRIPTION:${esc(sd.away.note||'')}\r\nCATEGORIES:${esc(sd.away.type)}\r\nEND:VEVENT\r\n`); return; }
-      if (sd.projects && sd.projects.length > 0) sd.projects.forEach(proj => { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: '+proj.name+(sd.remote?' 🏠':''))}\r\nDESCRIPTION:${esc(proj.name+' ('+proj.pct+'%)'+(sd.run?' + Run':'')+(sd.remote?' + Remote':''))}\r\nCATEGORIES:project\r\nEND:VEVENT\r\n`); });
-      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty'+(sd.remote?' 🏠':''))}\r\nCATEGORIES:run\r\nEND:VEVENT\r\n`);
+      if (sd.incident) { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Incident'+(sd.incident.text?': '+sd.incident.text:'')+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nCATEGORIES:incident\r\nEND:VEVENT\r\n`); return; }
+      if (sd.projects && sd.projects.length > 0) sd.projects.forEach(proj => { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: '+proj.name+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nDESCRIPTION:${esc(proj.name+' ('+proj.pct+'%)'+(sd.run?' + Run':'')+(sd.remote?' + Remote':sd.offsite?' + Off-site':''))}\r\nCATEGORIES:project\r\nEND:VEVENT\r\n`); });
+      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty'+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nCATEGORIES:run\r\nEND:VEVENT\r\n`);
     });
   }
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamVisualizer//V1//EN\r\n' + events.join('') + 'END:VCALENDAR\r\n';
@@ -1433,6 +1554,45 @@ function initNav() {
   document.getElementById('btn-logout').addEventListener('click', logout);
   document.getElementById('btn-export').addEventListener('click', doExport);
   document.getElementById('btn-help').addEventListener('click', showHelp);
+}
+
+// ===== CUSTOM CELL TOOLTIP (colored emoji) =====
+let _tooltipCell = null;
+function showCellTooltip(td) {
+  const tooltip = document.getElementById('cell-tooltip');
+  if (!tooltip) return;
+  const personId = td.dataset.person, date = td.dataset.date, slot = td.dataset.slot;
+  if (!personId || !date || !slot) { hideCellTooltip(); return; }
+  const sd = getSlot(personId, date, slot);
+  const person = getPerson(personId);
+  tooltip.innerHTML = getSlotTitleHtml(person, date, slot, sd);
+  tooltip.classList.remove('hidden');
+  // Position below the cell, clamped to viewport
+  const rect = td.getBoundingClientRect();
+  const ttRect = tooltip.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - ttRect.width / 2;
+  let top = rect.bottom + 4;
+  if (left < 4) left = 4;
+  if (left + ttRect.width > window.innerWidth - 4) left = window.innerWidth - ttRect.width - 4;
+  if (top + ttRect.height > window.innerHeight - 4) top = rect.top - ttRect.height - 4;
+  if (top < 4) top = 4;
+  tooltip.style.left = left + 'px';
+  tooltip.style.top = top + 'px';
+}
+function hideCellTooltip() {
+  const tooltip = document.getElementById('cell-tooltip');
+  if (tooltip) tooltip.classList.add('hidden');
+  _tooltipCell = null;
+}
+function initCellTooltips() {
+  document.addEventListener('mouseover', (e) => {
+    const td = e.target.closest('td.half-day');
+    if (td === _tooltipCell) return;
+    _tooltipCell = td;
+    if (td) showCellTooltip(td);
+    else hideCellTooltip();
+  });
+  document.addEventListener('mouseleave', hideCellTooltip);
 }
 
 // ===== TOAST NOTIFICATIONS =====
@@ -1503,6 +1663,7 @@ async function init() {
       State.myPersonId = meRes.person_id || '';
     } catch(e) { State.myPersonId = ''; }
     initNav();
+    initCellTooltips();
     WS.connect();
     updateWSStatus('reconnecting');
     render();

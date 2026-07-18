@@ -25,6 +25,9 @@ var migration004 string
 //go:embed migrations/005_team_lead.sql
 var migration005 string
 
+//go:embed migrations/006_offsite_incident.sql
+var migration006 string
+
 type Store struct {
 	db *sql.DB
 }
@@ -59,7 +62,7 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) migrate() error {
-	migrations := []string{migration001, migration002, migration003, migration004, migration005}
+	migrations := []string{migration001, migration002, migration003, migration004, migration005, migration006}
 	for i, m := range migrations {
 		// Split into individual statements and run each one. This makes
 		// ALTER TABLE / CREATE TABLE migrations idempotent: if a column or

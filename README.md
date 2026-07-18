@@ -74,7 +74,7 @@ docker run -p 8080:8080 \
 
 | Tab | Roles | Description |
 |-----|-------|-------------|
-| **Team Grid** | All | Half-day grid (people × weeks) with drag-select range editing, on-call, project colours, remote indicators, conflict warnings |
+| **Team Grid** | All | Half-day grid (people × weeks) with drag-select range editing, on-call, project colours, remote/off-site indicators, incident category, conflict warnings |
 | **Availability** | All | "Where is everyone" — per-person AM/PM status for a selected day |
 | **Run Coverage** | All | Per-half-day run coverage vs target, with below-target warnings |
 | **Guests** | All | Same grid as Team Grid but for guest people |
@@ -92,12 +92,14 @@ docker run -p 8080:8080 \
 
 - **Real-time collaboration** — WebSocket broadcasts all changes to all connected clients; presence indicators show who's online (with their assigned person's avatar emoji)
 - **Remote work** — per-slot 🏠 Remote flag, visible as a dashed border on any cell (project, away, run, undetermined). Toggle in single or bulk range edits. Excluded from run coverage counts.
+- **Off-site** — per-slot 🏢 Off-site flag, mutually exclusive with Remote. Visible as a dotted purple border on all views. Toggle in single or bulk range edits.
+- **Incident** — new slot category (like project, away, undetermined) for tracking incident work. Has a free-text field (e.g. ticket number). Shown as amber/yellow warning stripes with ⚠ icon. Counts as present (presence = 100%) but zero project workload. Mutually exclusive with project/run/away. Available in single + range editors, all views, TOML export/import, and ICS feeds.
 - **Undo/redo** — 20-level stack with `Ctrl+Z` / `Ctrl+Shift+Z` (or `Ctrl+Y`), reverting to the server (not just visual)
 - **Multi-level undo** — per-slot snapshots so concurrent edits by other users aren't clobbered
 - **Persistent view preferences** — scroll offset, group-by, weekend toggle, current tab, etc. saved in `localStorage`
 - **Search/filter + jump-to-date** — filter the team grid by name/sub-team/project; jump to any week via date picker
+- **Hover tooltips** — hovering a team grid cell shows full context: person, date, slot, and for project cells, each project's `name (pct%): description` on its own line (multi-line tooltip). Incident text, remote/off-site flags also shown.
 - **Holidays** — imported via TOML, shown as day-header badges (admin-selectable country), excluded from coverage counts
-- **ICS calendar subscription** — public per-person feed at `/api/ics/public/{token}` (admin generates/revokes tokens); also one-off ICS export per person
 - **"I am this person"** — each user maps themselves to a Person (self-service picker in topbar, admin-assignable); powers the My Week view and presence avatars
 - **Team lead** — each project can have a team lead (any person or guest), shown with ⭐ in the project view; guest leads styled distinctly
 - **12 themes** — Dracula, Monokai, Light, Nord, Solarized Light/Dark, GitHub, GitHub Dark, One Dark, Gruvbox, Tokyo Night, Catppuccin Mocha (per-browser via localStorage)
@@ -236,6 +238,7 @@ Migrations are embedded SQL files run on startup (idempotent — `ALTER TABLE` e
 | `003_features` | `audit_log` table, `users.selected_person_id`, `people.ics_token` |
 | `004_remote` | `planning.remote` column |
 | `005_team_lead` | `projects.team_lead` column |
+| `006_offsite_incident` | `planning.offsite` + `planning.incident_text` columns |
 
 ## Project structure
 

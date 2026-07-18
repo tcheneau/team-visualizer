@@ -117,6 +117,8 @@ func (r *Router) setSlot(w http.ResponseWriter, req *http.Request) {
 	detail := body.Data.State
 	if body.Data.Away != nil {
 		detail = "away:" + body.Data.Away.Type
+	} else if body.Data.Incident != nil {
+		detail = "incident:" + body.Data.Incident.Text
 	} else if len(body.Data.Projects) > 0 {
 		names := make([]string, 0, len(body.Data.Projects))
 		for _, p := range body.Data.Projects {

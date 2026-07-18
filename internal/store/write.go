@@ -74,7 +74,7 @@ func (s *Store) UnarchivePerson(id string) error {
 
 func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error {
 	// If state is not_filled or data is empty, delete the entry
-	if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run && !data.Remote) {
+	if data.State == "not_filled" || (data.State == "" && data.Away == nil && data.Incident == nil && len(data.Projects) == 0 && !data.Run && !data.Remote && !data.Offsite) {
 		return s.ClearSlot(personID, date, slot)
 	}
 
@@ -82,6 +82,10 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 	if data.Away != nil {
 		awayType = data.Away.Type
 		awayNote = data.Away.Note
+	}
+	incidentText := ""
+	if data.Incident != nil {
+		incidentText = data.Incident.Text
 	}
 	projectsJSON, _ := json.Marshal(data.Projects)
 	if string(projectsJSON) == "" || string(projectsJSON) == "null" {
@@ -95,9 +99,13 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 	if data.Remote {
 		remoteVal = 1
 	}
+	offsiteVal := 0
+	if data.Offsite {
+		offsiteVal = 1
+	}
 
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote) VALUES (?,?,?,?,?,?,?,?,?)`,
-		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal)
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText)
 	return err
 }
 
@@ -120,13 +128,17 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 		return err
 	}
 	for _, ref := range refs {
-		if data.State == "not_filled" || (data.State == "" && data.Away == nil && len(data.Projects) == 0 && !data.Run && !data.Remote) {
+		if data.State == "not_filled" || (data.State == "" && data.Away == nil && data.Incident == nil && len(data.Projects) == 0 && !data.Run && !data.Remote && !data.Offsite) {
 			_, err = tx.Exec("DELETE FROM planning WHERE person_id=? AND date=? AND slot=?", ref.PersonID, ref.Date, ref.Slot)
 		} else {
 			awayType, awayNote := "", ""
 			if data.Away != nil {
 				awayType = data.Away.Type
 				awayNote = data.Away.Note
+			}
+			incidentText := ""
+			if data.Incident != nil {
+				incidentText = data.Incident.Text
 			}
 			projectsJSON, _ := json.Marshal(data.Projects)
 			if string(projectsJSON) == "" || string(projectsJSON) == "null" {
@@ -140,8 +152,12 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Remote {
 				remoteVal = 1
 			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote) VALUES (?,?,?,?,?,?,?,?,?)`,
-				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal)
+			offsiteVal := 0
+			if data.Offsite {
+				offsiteVal = 1
+			}
+			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -192,10 +208,10 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 
 		for _, slot := range []string{"am", "pm"} {
 			// Read source entry
-			var state, awayType, awayNote, projectsJSON string
-			var run int
-			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects FROM planning WHERE person_id=? AND date=? AND slot=?",
-				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON)
+			var state, awayType, awayNote, projectsJSON, incidentText string
+			var run, remote, offsite int
+			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects, remote, offsite, incident_text FROM planning WHERE person_id=? AND date=? AND slot=?",
+				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText)
 			if err == sql.ErrNoRows {
 				continue
 			}
@@ -206,6 +222,10 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 			if awayType != "" {
 				continue
 			}
+			// Skip incident entries (incidents are unplanned events)
+			if incidentText != "" {
+				continue
+			}
 			// Check if target already has data
 			var existing int
 			s.db.QueryRow("SELECT COUNT(*) FROM planning WHERE person_id=? AND date=? AND slot=?", personID, toDateStr, slot).Scan(&existing)
@@ -213,8 +233,8 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 				continue // don't overwrite
 			}
 			// Insert at target
-			_, err = s.db.Exec("INSERT INTO planning (person_id, date, slot, state, away_type, away_note, run, projects) VALUES (?,?,?,?,?,?,?,?)",
-				personID, toDateStr, slot, state, "", "", run, projectsJSON)
+			_, err = s.db.Exec("INSERT INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite) VALUES (?,?,?,?,?,?,?,?,?,?)",
+				personID, toDateStr, slot, state, "", "", run, projectsJSON, remote, offsite)
 			if err != nil {
 				return copied, err
 			}
@@ -471,12 +491,16 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 		if ep.AwayType != "" {
 			away = &model.AwayData{Type: ep.AwayType, Note: ep.AwayNote}
 		}
+		incident := (*model.IncidentData)(nil)
+		if ep.IncidentText != "" {
+			incident = &model.IncidentData{Text: ep.IncidentText}
+		}
 		projs := ep.Projects
 		if projs == nil {
 			projs = []model.ProjectAssign{}
 		}
 		if e := s.SetSlot(ep.PersonID, ep.Date, ep.Slot, model.SlotData{
-			State: ep.State, Away: away, Projects: projs, Run: ep.Run, Remote: ep.Remote,
+			State: ep.State, Away: away, Incident: incident, Projects: projs, Run: ep.Run, Remote: ep.Remote, Offsite: ep.Offsite,
 		}); e != nil {
 			return created, updated, fmt.Errorf("import planning %s %s %s: %w", ep.PersonID, ep.Date, ep.Slot, e)
 		}

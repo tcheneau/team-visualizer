@@ -71,6 +71,9 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 	// Activity (read) — any role
 	mux.Get("/activity", r.listActivity)
 
+	// Incidents (read) — any role
+	mux.Get("/incidents", r.listIncidents)
+
 	// Me / person mapping — any role
 	mux.Get("/me/person", r.getMyPerson)
 	mux.Put("/me/person", r.setMyPerson)
@@ -442,6 +445,20 @@ func (r *Router) listActivity(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, events)
 }
 
+// ===== Incidents =====
+
+func (r *Router) listIncidents(w http.ResponseWriter, req *http.Request) {
+	incidents, err := r.db.ListIncidents()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if incidents == nil {
+		incidents = []store.IncidentEntry{}
+	}
+	writeJSON(w, http.StatusOK, incidents)
+}
+
 // ===== Me / Person Mapping =====
 
 func (r *Router) getMyPerson(w http.ResponseWriter, req *http.Request) {
@@ -610,6 +627,11 @@ func (r *Router) ServePublicICS(w http.ResponseWriter, req *http.Request) {
 		} else if e.Data.Away != nil {
 			summary = "Away: " + e.Data.Away.Type
 			description = e.Data.Away.Note
+		} else if e.Data.Incident != nil {
+			summary = "Incident"
+			if e.Data.Incident.Text != "" {
+				summary += ": " + e.Data.Incident.Text
+			}
 		} else if len(e.Data.Projects) > 0 {
 			names := make([]string, 0, len(e.Data.Projects))
 			for _, p := range e.Data.Projects {
@@ -623,6 +645,13 @@ func (r *Router) ServePublicICS(w http.ResponseWriter, req *http.Request) {
 			summary = "Run duty"
 		} else {
 			continue
+		}
+
+		// Append location flag indicator to summary
+		if e.Data.Remote {
+			summary += " 🏠"
+		} else if e.Data.Offsite {
+			summary += " 🏢"
 		}
 
 		ics.WriteString(fmt.Sprintf("BEGIN:VEVENT\r\nUID:%s\r\nDTSTAMP:%s\r\nDTSTART:%s\r\nDTEND:%s\r\nSUMMARY:%s\r\n",

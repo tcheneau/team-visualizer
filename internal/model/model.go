@@ -36,14 +36,20 @@ type Person struct {
 type SlotData struct {
 	State    string          `json:"state"`
 	Away     *AwayData       `json:"away"`
+	Incident *IncidentData   `json:"incident"`
 	Projects []ProjectAssign `json:"projects"`
 	Run      bool            `json:"run"`
 	Remote   bool            `json:"remote"`
+	Offsite  bool            `json:"offsite"`
 }
 
 type AwayData struct {
 	Type string `json:"type"`
 	Note string `json:"note"`
+}
+
+type IncidentData struct {
+	Text string `json:"text"`
 }
 
 type ProjectAssign struct {
