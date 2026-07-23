@@ -9,6 +9,15 @@ services:
       TVZ_JWT_SECRET: ${TVZ_JWT_SECRET:-dev-secret-change-me}
       TVZ_DB_PATH: /data/teamviz.db
       TVZ_LISTEN: ":8080"
+      # Dev mode allows local testing without Keycloak via X-Dev-User / X-Dev-Groups headers.
+      # Set to false and provide the TVZ_OIDC_* vars below to use direct Keycloak OIDC.
+      TVZ_DEV_MODE: ${TVZ_DEV_MODE:-true}
+      # OIDC (required when TVZ_DEV_MODE=false)
+      TVZ_OIDC_ISSUER: ${TVZ_OIDC_ISSUER:-}
+      TVZ_OIDC_CLIENT_ID: ${TVZ_OIDC_CLIENT_ID:-}
+      TVZ_OIDC_CLIENT_SECRET: ${TVZ_OIDC_CLIENT_SECRET:-}
+      TVZ_OIDC_REDIRECT_URL: ${TVZ_OIDC_REDIRECT_URL:-}
+      TVZ_OIDC_INTERNAL_HOST: ${TVZ_OIDC_INTERNAL_HOST:-}
     volumes:
       - teamviz-data:/data
     restart: unless-stopped
