@@ -3,9 +3,9 @@
 
 set -e
 BASE_URL="http://localhost:8080"
-ADMIN="-H X-Forwarded-User:admin -H X-Forwarded-Groups:admin"
-NORMAL="-H X-Forwarded-User:alice -H X-Forwarded-Groups:normal"
-RO="-H X-Forwarded-User:bob -H X-Forwarded-Groups:readonly"
+ADMIN="-H X-Dev-User:admin -H X-Dev-Groups:admin"
+NORMAL="-H X-Dev-User:alice -H X-Dev-Groups:normal"
+RO="-H X-Dev-User:bob -H X-Dev-Groups:readonly"
 PASS=0; FAIL=0; PID=""
 
 cleanup() { [ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -f teamviz.db*; }
@@ -17,7 +17,7 @@ eq()   { [ "$2" = "$3" ] && ok "$1" || fail "$1 (got '$2', want '$3')"; }
 code() { eq "$1" "$2" "$3"; }
 
 echo "=== Starting server ==="
-TVZ_JWT_SECRET=testsecret /tmp/teamviz &
+TVZ_JWT_SECRET=testsecret TVZ_DEV_MODE=true /tmp/teamviz &
 PID=$!; sleep 1
 
 echo "=== Foundation ==="

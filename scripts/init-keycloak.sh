@@ -1,6 +1,6 @@
 #!/bin/bash
 # init-keycloak.sh — Provisions Keycloak realm, users, groups, and OIDC client
-# for the Team Visualizer demo with oauth2-proxy.
+# for the Team Visualizer demo with direct OIDC.
 #
 # Idempotent: every resource is created only if it is missing, so this script
 # is safe to re-run and will self-heal a half-provisioned realm (e.g. a realm
@@ -117,10 +117,10 @@ if [ -z "$CLIENT_ID" ]; then
       "secret":"demo-secret-not-for-production-use",
       "directAccessGrantsEnabled":true,
       "standardFlowEnabled":true,
-      "redirectUris":["http://localhost:8080/oauth2/callback","http://localhost:8080/*"],
+      "redirectUris":["http://localhost:8080/auth/callback"],
       "webOrigins":["http://localhost:8080"],
       "attributes":{
-        "post.logout.redirect.uris":"http://localhost:8080/*",
+        "post.logout.redirect.uris":"http://localhost:8080/,http://localhost:8080/auth/logout",
         "oauth2.device.authorization.grant.enabled":"false"
       }
     }'

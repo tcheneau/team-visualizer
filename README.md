@@ -8,7 +8,7 @@ If like some, you can't stand AI generated content: I can perfectly understand y
 
 ## Summary
 
-A self-hosted web application for planning and visualising a team's activity across away time, project time, run time, and remote work — with real-time collaboration, role-based access, and a full Keycloak + oauth2-proxy demo setup.
+A self-hosted web application for planning and visualising a team's activity across away time, project time, run time, and remote work — with real-time collaboration, role-based access, and a full Keycloak + Apache reverse proxy demo setup.
 
 ## Quick Start
 
@@ -19,16 +19,19 @@ export TVZ_JWT_SECRET=$(openssl rand -hex 32)
 go run .
 ```
 
-The server starts on `http://localhost:8080`. Without a reverse proxy, API endpoints require auth headers:
+The server starts on `http://localhost:8080`.
+
+For local development without Keycloak, enable dev mode and use dev headers:
 
 ```bash
-curl -s -H "X-Forwarded-User: jdoe" -H "X-Forwarded-Groups: admin" \
+TVZ_DEV_MODE=true TVZ_JWT_SECRET=dev-secret ./teamviz &
+curl -s -H "X-Dev-User: jdoe" -H "X-Dev-Groups: admin" \
   http://localhost:8080/api/auth/session | jq .
 ```
 
 ### Demo with Keycloak (Docker Compose)
 
-A full demo with Keycloak authentication, 3 pre-provisioned users, and oauth2-proxy:
+A full demo with Keycloak authentication, 3 pre-provisioned users, and direct OIDC:
 
 ```bash
 docker compose -f docker-compose.demo.yml up -d --build
@@ -47,14 +50,20 @@ Wait ~40s for Keycloak to start and provision, then open `http://localhost:8080`
 #### Architecture
 
 ```
-Browser → oauth2-proxy (:8080) → Team Visualizer (:8080 internal)
-              ↓
-         Keycloak (:8090) — OIDC provider
+Browser → Apache (:8080) → Team Visualizer (:8080 internal)
+                              ↕ (OIDC: Authorization Code + PKCE)
+                          Keycloak (:8090) — OIDC provider
 ```
 
+1. User opens `http://localhost:8080`
+2. App redirects to Keycloak login (`http://localhost:8090`)
+3. User logs in, Keycloak redirects back to `http://localhost:8080/auth/callback`
+4. App validates the OIDC ID token, creates a session, redirects to `/`
+5. User sees the app
+
 - **Keycloak** — OIDC identity provider with pre-provisioned realm, users, groups, and client
-- **oauth2-proxy** — handles the OAuth2/OIDC flow, sets `X-Forwarded-Preferred-Username` and `X-Forwarded-Groups` headers
-- **Team Visualizer** — Go app that trusts the proxy headers and maps groups to roles
+- **Apache** — reverse proxy with WebSocket support, TLS-ready (TLS block commented out in config)
+- **Team Visualizer** — Go app that talks to Keycloak directly via OIDC (Authorization Code flow with PKCE)
 
 Keycloak admin console: `http://localhost:8090` (admin/admin). Realm: `teamviz`.
 
@@ -106,7 +115,7 @@ docker run -p 8080:8080 \
 - **Expanded emoji picker** — ~430 emojis with a 🎲 random picker as the first standout item
 - **Day-of-month headers** — day columns show `Mon / 14` format
 - **Keyboard shortcuts** — ←/→ move timeframe, `U` undetermined, `R` toggle run, `Ctrl+Z` undo, `Ctrl+Shift+Z` redo, `Esc` close
-- **Sign out / switch user** — clears both oauth2-proxy and Keycloak sessions, redirects to login page
+- **Sign out / switch user** — clears the app session and redirects to Keycloak's end_session endpoint
 - **Responsive** — collapsible nav, scrollable grid, mobile-optimised My Week view
 
 ### TOML import/export
@@ -124,14 +133,18 @@ docker run -p 8080:8080 \
 | `TVZ_DB_PATH`             | `/data/teamviz.db`   | SQLite database file path            |
 | `TVZ_JWT_SECRET`          | *(required)*         | Secret for signing JWT tokens        |
 | `TVZ_JWT_TTL`             | `24h`                | JWT token lifetime                   |
-| `TVZ_PROXY_HEADER_USER`   | `X-Forwarded-User`   | Header containing the username       |
-| `TVZ_PROXY_HEADER_GROUPS` | `X-Forwarded-Groups` | Header containing user groups/roles  |
-| `TVZ_ADMIN_GROUP`         | `admin`              | Group name mapping to admin role     |
-| `TVZ_NORMAL_GROUP`        | `normal`             | Group name mapping to normal role    |
-| `TVZ_READONLY_GROUP`      | `readonly`           | Group name mapping to read-only role |
-| `TVZ_WS_ENABLED`          | `true`               | Enable WebSocket real-time updates   |
+| `TVZ_OIDC_ISSUER`            | —                    | OIDC issuer URL (Keycloak realm)                    |
+| `TVZ_OIDC_CLIENT_ID`         | —                    | OIDC client ID                                      |
+| `TVZ_OIDC_CLIENT_SECRET`     | —                    | OIDC client secret (shared with Keycloak)           |
+| `TVZ_OIDC_REDIRECT_URL`      | —                    | OIDC callback URL (e.g. `http://localhost:8080/auth/callback`) |
+| `TVZ_OIDC_INTERNAL_HOST`     | —                    | Internal host:port for Docker (rewrites OIDC backend calls) |
+| `TVZ_OIDC_SCOPES`            | `openid,email,profile` | Comma-separated OIDC scopes                        |
+| `TVZ_DEV_MODE`               | `false`              | Enable X-Dev-* header auth for testing              |
+| `TVZ_ADMIN_GROUP`            | `admin`              | Group name mapping to admin role                    |
+| `TVZ_NORMAL_GROUP`           | `normal`             | Group name mapping to normal role                   |
+| `TVZ_READONLY_GROUP`         | `readonly`           | Group name mapping to read-only role                |
+| `TVZ_WS_ENABLED`             | `true`               | Enable WebSocket real-time updates                  |
 
-> **Note:** In the Keycloak demo, `TVZ_PROXY_HEADER_USER` is set to `X-Forwarded-Preferred-Username` so the app displays the Keycloak username (e.g. `admin`) rather than the `sub` UUID.
 
 ## Roles & Permissions
 
@@ -149,7 +162,7 @@ docker run -p 8080:8080 \
 | Export TOML                  |  ✅   |  ✅    |    ✅     |
 | Change theme                 |  ✅   |  ✅    |    ✅     |
 
-**Auth model:** The app runs behind a reverse proxy (oauth2-proxy in the demo). Proxy headers are **authoritative** — they take priority over any stale JWT cookie, so switching users in Keycloak immediately updates the app's identity and role. The JWT is used only as a session token for API/WebSocket auth.
+**Auth model:** The app talks to Keycloak directly via OIDC (Authorization Code flow with PKCE). On login, the app validates the Keycloak ID token, extracts the `preferred_username` and `groups` claims, and issues its own HS256 JWT as the session token (stored in an HttpOnly cookie). The JWT is used for API auth and WebSocket connections.
 
 **Settings key access:**
 - All roles: `window_weeks`, `run_mode`, `run_target_persons`
@@ -246,7 +259,7 @@ Migrations are embedded SQL files run on startup (idempotent — `ALTER TABLE` e
 main.go                      — Entry point, server setup, public ICS route
 internal/
   config/   — Environment configuration
-  auth/     — Reverse proxy auth → JWT, role middleware (proxy headers authoritative)
+  auth/     — OIDC auth (Keycloak direct), JWT session, role middleware
   model/    — Domain structs (Person, Project, SlotData with Remote, Settings with HolidayCountry)
   store/    — SQLite data access + migrations + audit log + ICS tokens
   api/      — REST API handlers (read + write + activity + users + ICS)
@@ -258,9 +271,11 @@ web/
   legacy/   — Legacy HTML5 app (served at /legacy/)
 scripts/
   init-keycloak.sh — Idempotent Keycloak provisioning (realm, users, groups, client, mappers)
-docker-compose.demo.yml — Full demo: Keycloak + oauth2-proxy + Team Visualizer
-Dockerfile                — Multi-stage build (Go + Alpine)
-test-api.sh              — End-to-end API test script
+  docker-compose.demo.yml — Full demo: Keycloak + Apache + Team Visualizer (direct OIDC)
+  apache/apache.conf — Apache reverse proxy config (WebSocket support, TLS-ready)
+  Dockerfile.apache — Apache image with proxy/wstunnel/rewrite/ssl modules enabled
+  Dockerfile                — Multi-stage build (Go + Alpine)
+  test-api.sh              — End-to-end API test script
 ```
 
 ## Build

@@ -39,9 +39,6 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 	// Apply auth middleware to all API routes
 	mux.Use(r.auth.Middleware)
 
-	// Health check
-	mux.Get("/health", r.health)
-
 	// Auth
 	mux.Get("/auth/session", r.getSession)
 
@@ -131,7 +128,8 @@ func (r *Router) RegisterRoutes(mux chi.Router) {
 
 // ===== Health =====
 
-func (r *Router) health(w http.ResponseWriter, req *http.Request) {
+// Health is the public health-check handler (no auth required).
+func (r *Router) Health(w http.ResponseWriter, req *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":  "ok",
 		"version": "0.2.0",

@@ -50,8 +50,16 @@ func main() {
 	root.Use(middleware.Recoverer)
 	root.Use(middleware.RequestID)
 
+	// Public health check (no auth — used by Docker healthcheck)
+	root.Get("/api/health", apiRouter.Health)
+
 	// Public ICS feed (no auth — mounted before the authed /api group)
 	root.Get("/api/ics/public/{token}", apiRouter.ServePublicICS)
+
+	// Auth routes (public — OIDC flow handlers)
+	root.Get("/auth/login", authSvc.LoginHandler)
+	root.Get("/auth/callback", authSvc.CallbackHandler)
+	root.Get("/auth/logout", authSvc.LogoutHandler)
 
 	// API routes (JSON)
 	root.Route("/api", func(r chi.Router) {

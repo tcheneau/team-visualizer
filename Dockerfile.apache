@@ -1,0 +1,16 @@
+FROM httpd:2.4-alpine
+
+# Enable required Apache modules for reverse proxy + WebSocket + TLS
+RUN sed -i \
+    -e '/LoadModule proxy_module/s/^#//' \
+    -e '/LoadModule proxy_http_module/s/^#//' \
+    -e '/LoadModule proxy_wstunnel_module/s/^#//' \
+    -e '/LoadModule rewrite_module/s/^#//' \
+    -e '/LoadModule ssl_module/s/^#//' \
+    -e '/LoadModule headers_module/s/^#//' \
+    conf/httpd.conf
+
+# Include our custom virtual host config
+RUN echo 'Include conf/extra/apache.conf' >> conf/httpd.conf
+
+COPY apache/apache.conf /usr/local/apache2/conf/extra/apache.conf

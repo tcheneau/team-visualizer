@@ -14,7 +14,7 @@ const (
 	ctxToken contextKey = "token"
 )
 
-// Middleware authenticates every request via JWT or proxy headers.
+// Middleware authenticates every request via JWT or dev headers.
 // It stores the user and token in the request context.
 func (a *AuthService) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -24,7 +24,7 @@ func (a *AuthService) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Set JWT cookie if we got a new token (from proxy headers)
+		// Set JWT cookie if we got a new token (from dev headers or OIDC callback)
 		if cookie, _ := r.Cookie("teamviz_token"); cookie == nil || cookie.Value != token {
 			http.SetCookie(w, &http.Cookie{
 				Name:     "teamviz_token",
@@ -32,7 +32,7 @@ func (a *AuthService) Middleware(next http.Handler) http.Handler {
 				Path:     "/",
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
-				MaxAge:   86400, // 24h
+				MaxAge:   int(a.cfg.JWTTTL.Seconds()),
 			})
 		}
 
