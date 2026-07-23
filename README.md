@@ -67,15 +67,67 @@ Browser → Apache (:8080) → Team Visualizer (:8080 internal)
 
 Keycloak admin console: `http://localhost:8090` (admin/admin). Realm: `teamviz`.
 
-### Docker (standalone)
+### Docker (standalone, dev mode)
+
+Without Keycloak, run in dev mode with header-based auth:
 
 ```bash
 docker build -t teamviz .
 docker run -p 8080:8080 \
   -e TVZ_JWT_SECRET=$(openssl rand -hex 32) \
+  -e TVZ_DEV_MODE=true \
   -v teamviz-data:/data \
   teamviz
 ```
+
+Test with dev headers:
+
+```bash
+curl -H "X-Dev-User: jdoe" -H "X-Dev-Groups: admin" http://localhost:8080/api/auth/session
+```
+
+### Kerberos / Active Directory (Apache + mod_auth_gssapi)
+
+For corporate environments with Kerberos (AD), use the sample Apache config
+that authenticates via SPNEGO and forwards the identity to Team Visualizer
+via `X-Dev-User` / `X-Dev-Groups` headers (dev mode). A Lua script performs
+LDAP group lookups to map AD groups to app roles.
+
+```
+Browser (Kerberos ticket)
+  → Apache mod_auth_gssapi (validates ticket, sets REMOTE_USER)
+  → Apache mod_lua/group_lookup.lua (LDAP group query → X-Dev-Groups)
+  → Team Visualizer (TVZ_DEV_MODE=true, reads X-Dev-User + X-Dev-Groups)
+```
+
+**Files:**
+
+| File | Purpose |
+|---|---|
+| `apache/apache-kerberos.conf` | Apache VirtualHost config (Kerberos auth, LDAP group lookup, reverse proxy) |
+| `apache/group_lookup.lua` | Lua hook that queries LDAP for group membership and maps to app roles |
+
+**App config:**
+
+```bash
+TVZ_DEV_MODE=true
+TVZ_ADMIN_GROUP=tvz-admin
+TVZ_NORMAL_GROUP=tvz-normal
+TVZ_READONLY_GROUP=tvz-readonly
+```
+
+**What you need to provide:**
+
+1. A Kerberos service principal (`HTTP/teamviz.example.com@EXAMPLE.COM`) and keytab
+2. `/etc/krb5.conf` pointing to your KDC
+3. An LDAP bind account for group lookups
+4. Browser SPNEGO configuration (Firefox: `network.negotiate-auth.trusted-uris`; Chrome: GPO `AuthServerAllowList`)
+
+All setup steps are documented as comments in `apache/apache-kerberos.conf`.
+
+**Group → role mapping:** The Lua script reads `TVZ_LDAP_GROUP_MAP` (pipe-separated `app-group=LDAP-DN` entries) and queries LDAP for the user's `memberOf` attribute. Results are cached per-user for a configurable TTL. If no group map is configured, all authenticated users get the `readonly` role.
+
+**When to use Kerberos vs OIDC:** Use Kerberos when users are on domain-joined machines in a corporate AD environment and you want transparent SSO without browser redirects. Use OIDC (the direct Keycloak flow) for cross-platform, cross-organization, or mobile access.
 
 ## Features
 
@@ -273,6 +325,8 @@ scripts/
   init-keycloak.sh — Idempotent Keycloak provisioning (realm, users, groups, client, mappers)
   docker-compose.demo.yml — Full demo: Keycloak + Apache + Team Visualizer (direct OIDC)
   apache/apache.conf — Apache reverse proxy config (WebSocket support, TLS-ready)
+  apache/apache-kerberos.conf — Apache Kerberos (SPNEGO) config with LDAP group → role mapping
+  apache/group_lookup.lua — Lua hook for LDAP group lookup (used by apache-kerberos.conf)
   Dockerfile.apache — Apache image with proxy/wstunnel/rewrite/ssl modules enabled
   Dockerfile                — Multi-stage build (Go + Alpine)
   test-api.sh              — End-to-end API test script
