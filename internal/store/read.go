@@ -59,7 +59,7 @@ func scanPerson(r interface{ Scan(...any) error }) (model.Person, error) {
 
 func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident
 		FROM planning
 		WHERE date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY person_id, date, slot`, startDate, endDate)
@@ -72,15 +72,15 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON, incidentText string
-		var run, remote, offsite int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText)
+		var run, remote, offsite, isIncident int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
 		if err != nil {
 			return nil, err
 		}
 		if awayType != "" {
 			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
 		}
-		if incidentText != "" {
+		if isIncident != 0 {
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
 		}
 		e.Data.Run = run != 0
@@ -99,7 +99,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 // GetPlanningForPerson returns all planning entries for a specific person in a date range.
 func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident
 		FROM planning
 		WHERE person_id = ? AND date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY date, slot`, personID, startDate, endDate)
@@ -112,15 +112,15 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON, incidentText string
-		var run, remote, offsite int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText)
+		var run, remote, offsite, isIncident int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
 		if err != nil {
 			return nil, err
 		}
 		if awayType != "" {
 			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
 		}
-		if incidentText != "" {
+		if isIncident != 0 {
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
 		}
 		e.Data.Run = run != 0
@@ -305,6 +305,7 @@ type ExportPlanning struct {
 	Run          bool                  `toml:"run"`
 	Remote       bool                  `toml:"remote"`
 	Offsite      bool                  `toml:"offsite"`
+	Incident     bool                  `toml:"incident"`
 	IncidentText string                `toml:"incident_text"`
 	Projects     []model.ProjectAssign `toml:"projects"`
 }
@@ -367,7 +368,7 @@ func (s *Store) GetExportData() (*ExportData, error) {
 			PersonID: e.PersonID, Date: e.Date, Slot: e.Slot,
 			State: e.Data.State, AwayType: awayType, AwayNote: awayNote,
 			Run: e.Data.Run, Remote: e.Data.Remote, Offsite: e.Data.Offsite,
-			IncidentText: incidentText, Projects: projs,
+			IncidentText: incidentText, Incident: e.Data.Incident != nil, Projects: projs,
 		})
 	}
 
@@ -424,14 +425,15 @@ type IncidentEntry struct {
 	IncidentText string `json:"incident_text"`
 }
 
-// ListIncidents returns all planning entries with a non-empty incident_text,
-// joined with person details, ordered by date DESC then slot DESC (most recent first).
+// ListIncidents returns all planning entries flagged as an incident (including
+// those with empty text), joined with person details, ordered by date DESC
+// then slot DESC (most recent first).
 func (s *Store) ListIncidents() ([]IncidentEntry, error) {
 	rows, err := s.db.Query(`
 		SELECT p.person_id, pe.name, pe.avatar_emoji, p.date, p.slot, p.incident_text
 		FROM planning p
 		JOIN people pe ON p.person_id = pe.id
-		WHERE p.incident_text != ''
+		WHERE p.is_incident = 1
 		ORDER BY p.date DESC, p.slot DESC`)
 	if err != nil {
 		return nil, err

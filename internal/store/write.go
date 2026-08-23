@@ -84,8 +84,10 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 		awayNote = data.Away.Note
 	}
 	incidentText := ""
+	isIncident := 0
 	if data.Incident != nil {
 		incidentText = data.Incident.Text
+		isIncident = 1
 	}
 	projectsJSON, _ := json.Marshal(data.Projects)
 	if string(projectsJSON) == "" || string(projectsJSON) == "null" {
@@ -104,8 +106,8 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 		offsiteVal = 1
 	}
 
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText)
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident)
 	return err
 }
 
@@ -137,8 +139,10 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 				awayNote = data.Away.Note
 			}
 			incidentText := ""
+			isIncident := 0
 			if data.Incident != nil {
 				incidentText = data.Incident.Text
+				isIncident = 1
 			}
 			projectsJSON, _ := json.Marshal(data.Projects)
 			if string(projectsJSON) == "" || string(projectsJSON) == "null" {
@@ -156,8 +160,8 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Offsite {
 				offsiteVal = 1
 			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text) VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
-				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText)
+			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
+				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -209,9 +213,9 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 		for _, slot := range []string{"am", "pm"} {
 			// Read source entry
 			var state, awayType, awayNote, projectsJSON, incidentText string
-			var run, remote, offsite int
-			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects, remote, offsite, incident_text FROM planning WHERE person_id=? AND date=? AND slot=?",
-				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText)
+			var run, remote, offsite, isIncident int
+			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident FROM planning WHERE person_id=? AND date=? AND slot=?",
+				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
 			if err == sql.ErrNoRows {
 				continue
 			}
@@ -223,7 +227,7 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 				continue
 			}
 			// Skip incident entries (incidents are unplanned events)
-			if incidentText != "" {
+			if isIncident != 0 {
 				continue
 			}
 			// Check if target already has data
@@ -492,7 +496,7 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 			away = &model.AwayData{Type: ep.AwayType, Note: ep.AwayNote}
 		}
 		incident := (*model.IncidentData)(nil)
-		if ep.IncidentText != "" {
+		if ep.Incident {
 			incident = &model.IncidentData{Text: ep.IncidentText}
 		}
 		projs := ep.Projects

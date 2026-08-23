@@ -1361,11 +1361,12 @@ function renderIncidentsList(container) {
   html += '<div style="display:flex;flex-direction:column;gap:4px;max-height:70vh;overflow-y:auto">';
   State.incidents.forEach(inc => {
     const slotLabel = inc.slot === 'am' ? 'AM' : 'PM';
+    const textDisp = inc.incident_text ? esc(inc.incident_text) : '<span style="color:var(--fg-muted);font-style:italic">(no description)</span>';
     html += `<div style="background:var(--surface);border:1px solid var(--border);border-left:3px solid var(--slot-incident-line);border-radius:4px;padding:6px 10px;font-size:.85rem;display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <span style="color:var(--fg-muted);font-size:.75rem;min-width:110px;white-space:nowrap">${inc.date} ${slotLabel}</span>
       <span style="min-width:120px;cursor:pointer;color:var(--accent)" onclick="showIndividual('${inc.person_id}')" title="Click to view this person's schedule">${esc(inc.avatar_emoji||'👤')} ${esc(inc.person_name)}</span>
       <span style="color:var(--slot-incident-line);font-weight:700;font-size:1rem">⚠</span>
-      <span style="flex:1;min-width:200px">${esc(inc.incident_text)}</span>
+      <span style="flex:1;min-width:200px">${textDisp}</span>
     </div>`;
   });
   html += '</div>';
