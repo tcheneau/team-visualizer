@@ -59,7 +59,7 @@ func scanPerson(r interface{ Scan(...any) error }) (model.Person, error) {
 
 func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note, tentative
 		FROM planning
 		WHERE date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY person_id, date, slot`, startDate, endDate)
@@ -72,13 +72,13 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON, incidentText, runNote string
-		var run, remote, offsite, isIncident int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote)
+		var run, remote, offsite, isIncident, tentative int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote, &tentative)
 		if err != nil {
 			return nil, err
 		}
 		if awayType != "" {
-			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
+			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote, Tentative: tentative != 0}
 		}
 		if isIncident != 0 {
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
@@ -100,7 +100,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 // GetPlanningForPerson returns all planning entries for a specific person in a date range.
 func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note, tentative
 		FROM planning
 		WHERE person_id = ? AND date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY date, slot`, personID, startDate, endDate)
@@ -113,13 +113,13 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 	for rows.Next() {
 		var e model.PlanningEntry
 		var awayType, awayNote, projectsJSON, incidentText, runNote string
-		var run, remote, offsite, isIncident int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote)
+		var run, remote, offsite, isIncident, tentative int
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote, &tentative)
 		if err != nil {
 			return nil, err
 		}
 		if awayType != "" {
-			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote}
+			e.Data.Away = &model.AwayData{Type: awayType, Note: awayNote, Tentative: tentative != 0}
 		}
 		if isIncident != 0 {
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
@@ -193,21 +193,21 @@ func (s *Store) GetPeopleOnProject(projectName string) ([]string, error) {
 
 // ===== On-Call =====
 
-func (s *Store) GetOnCall(startDate, endDate string) (map[string][]string, error) {
-	// Returns map of week_start → []person_id
-	rows, err := s.db.Query(`SELECT person_id, week_start FROM oncall WHERE week_start >= ? AND week_start <= ?`, startDate, endDate)
+func (s *Store) GetOnCall(startDate, endDate string) (map[string][]OnCallEntry, error) {
+	// Returns map of week_start → []OnCallEntry (person + comment)
+	rows, err := s.db.Query(`SELECT person_id, week_start, comment FROM oncall WHERE week_start >= ? AND week_start <= ?`, startDate, endDate)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	result := make(map[string][]string)
+	result := make(map[string][]OnCallEntry)
 	for rows.Next() {
-		var personID, weekStart string
-		if err := rows.Scan(&personID, &weekStart); err != nil {
+		var personID, weekStart, comment string
+		if err := rows.Scan(&personID, &weekStart, &comment); err != nil {
 			return nil, err
 		}
-		result[weekStart] = append(result[weekStart], personID)
+		result[weekStart] = append(result[weekStart], OnCallEntry{PersonID: personID, Comment: comment})
 	}
 	return result, nil
 }
@@ -310,12 +310,20 @@ type ExportPlanning struct {
 	Incident     bool                  `toml:"incident"`
 	IncidentText string                `toml:"incident_text"`
 	RunNote      string                `toml:"run_note"`
+	Tentative    bool                  `toml:"tentative"`
 	Projects     []model.ProjectAssign `toml:"projects"`
 }
 
 type ExportKeyVal struct {
 	PersonID  string `toml:"person_id"`
 	WeekStart string `toml:"week_start"`
+	Comment   string `toml:"comment,omitempty"`
+}
+
+// OnCallEntry is one on-call assignment (person + week + optional comment).
+type OnCallEntry struct {
+	PersonID string `json:"person_id"`
+	Comment  string `json:"comment"`
 }
 
 // GetExportData gathers all data for TOML export.
@@ -371,7 +379,7 @@ func (s *Store) GetExportData() (*ExportData, error) {
 			PersonID: e.PersonID, Date: e.Date, Slot: e.Slot,
 			State: e.Data.State, AwayType: awayType, AwayNote: awayNote,
 			Run: e.Data.Run, Remote: e.Data.Remote, Offsite: e.Data.Offsite,
-			IncidentText: incidentText, Incident: e.Data.Incident != nil, RunNote: e.Data.RunNote, Projects: projs,
+			IncidentText: incidentText, Incident: e.Data.Incident != nil, RunNote: e.Data.RunNote, Tentative: e.Data.Away != nil && e.Data.Away.Tentative, Projects: projs,
 		})
 	}
 
@@ -387,9 +395,9 @@ func (s *Store) GetExportData() (*ExportData, error) {
 		return nil, fmt.Errorf("export oncall: %w", err)
 	}
 	var exportOnCall []ExportKeyVal
-	for weekStart, pids := range oncallMap {
-		for _, pid := range pids {
-			exportOnCall = append(exportOnCall, ExportKeyVal{PersonID: pid, WeekStart: weekStart})
+	for weekStart, entries := range oncallMap {
+		for _, e := range entries {
+			exportOnCall = append(exportOnCall, ExportKeyVal{PersonID: e.PersonID, WeekStart: weekStart, Comment: e.Comment})
 		}
 	}
 

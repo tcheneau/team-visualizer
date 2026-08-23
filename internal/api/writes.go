@@ -410,6 +410,7 @@ func (r *Router) importProjectCSV(w http.ResponseWriter, req *http.Request) {
 type onCallReq struct {
 	PersonID  string `json:"person_id"`
 	WeekStart string `json:"week_start"`
+	Comment   string `json:"comment"`
 }
 
 func (r *Router) setOnCall(w http.ResponseWriter, req *http.Request) {
@@ -418,7 +419,7 @@ func (r *Router) setOnCall(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	if err := r.db.SetOnCall(body.PersonID, body.WeekStart, true); err != nil {
+	if err := r.db.SetOnCall(body.PersonID, body.WeekStart, body.Comment, true); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -433,7 +434,7 @@ func (r *Router) removeOnCall(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON"})
 		return
 	}
-	if err := r.db.SetOnCall(body.PersonID, body.WeekStart, false); err != nil {
+	if err := r.db.SetOnCall(body.PersonID, body.WeekStart, "", false); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}

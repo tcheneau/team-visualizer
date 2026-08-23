@@ -172,7 +172,7 @@ const WS = {
       case 'project_added': if (!State.projects.find(p => p.id === msg.data.id)) State.projects.push(msg.data); break;
       case 'project_updated': { const i = State.projects.findIndex(p => p.id === msg.data.id); if (i >= 0) State.projects[i] = msg.data; break; }
       case 'project_deleted': State.projects = State.projects.filter(p => p.id !== msg.data.id); break;
-      case 'oncall_changed': { API.get(`/oncall?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.oncall = d || {}; render(); }); return; }
+      case 'oncall_changed': { const s0 = formatWeekStart(getVisibleWeeks()[0]), e0 = windowEndDate(getVisibleWeeks()); API.get(`/oncall?start=${s0}&end=${e0}`).then(d => { State.oncall = d || {}; if (currentView === 'oncall') oncallLoadedYear = null; render(); }); return; }
       case 'rotation_changed': { API.get(`/rotation?start=${formatWeekStart(getVisibleWeeks()[0])}&end=${windowEndDate(getVisibleWeeks())}`).then(d => { State.rotation = d || {}; render(); }); return; }
       case 'settings_updated': State.settings = Object.assign({}, State.settings, msg.data); break;
       case 'holidays_imported': API.get('/holidays').then(d => { State.holidays = d || []; render(); }); return;
@@ -265,7 +265,7 @@ function getSlotClass(slotData) {
   }
   const flagCls = slotData.remote ? ' remote' : slotData.offsite ? ' offsite' : '';
   if (slotData.state === 'undetermined') return 'undetermined' + flagCls;
-  if (slotData.away) return 'away' + flagCls;
+  if (slotData.away) return 'away' + (slotData.away.tentative ? ' tentative' : '') + flagCls;
   if (slotData.incident) return 'incident' + flagCls;
   if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run' + flagCls;
   if (slotData.run) return 'run' + flagCls;
@@ -279,7 +279,7 @@ function getCellLabel(slotData) {
   // Note: remote/off-site icons are added via CSS ::before on .cell-label,
   // so we do NOT include them in the text here (avoids double icons).
   if (slotData.state === 'undetermined') return '?';
-  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return (a[slotData.away.type] || slotData.away.type); }
+  if (slotData.away) { const a = {vacation:'Vac',public_holiday:'Hol',sick_leave:'Sick',training:'Train',conference:'Conf',parental_leave:'Par',sabbatical:'Sab',other:'Other'}; return (a[slotData.away.type] || slotData.away.type) + (slotData.away.tentative ? '?' : ''); }
   if (slotData.incident) return '⚠';
   let parts = [];
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
@@ -290,7 +290,7 @@ function getMergeKey(slotData, weekIndex) {
   const wk = 'w' + weekIndex + ':';
   if (!slotData || slotData.state === 'not_filled') return wk + 'nf';
   if (slotData.state === 'undetermined') return wk + 'und';
-  if (slotData.away) return wk + 'away:' + slotData.away.type;
+  if (slotData.away) return wk + 'away:' + slotData.away.type + (slotData.away.tentative ? ':t' : '');
   if (slotData.incident) return wk + 'incident:' + (slotData.incident.text || '');
   if (slotData.projects && slotData.projects.length === 1 && !slotData.run) return wk + 'proj:' + slotData.projects[0].name;
   if (slotData.projects && slotData.projects.length === 1 && slotData.run) return wk + 'projrun:' + slotData.projects[0].name + ':' + (slotData.run_note || '');
@@ -303,7 +303,7 @@ function getSlotTitle(person, dateStr, slot, slotData) {
   const flagTxt = slotData && slotData.remote ? ' + Remote' : slotData && slotData.offsite ? ' + Off-site' : '';
   if (!slotData || slotData.state === 'not_filled') return `${name} · ${dateStr} ${slot} · Not filled${flagTxt}`;
   if (slotData.state === 'undetermined') return `${name} · ${dateStr} ${slot} · Undetermined project${flagTxt}`;
-  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}${flagTxt}`;
+  if (slotData.away) return `${name} · ${dateStr} ${slot} · Away: ${slotData.away.type}${slotData.away.tentative?' (tentative)':''}${slotData.away.note ? ' ('+slotData.away.note+')' : ''}${flagTxt}`;
   if (slotData.incident) return `${name} · ${dateStr} ${slot} · Incident${slotData.incident.text ? ': ' + slotData.incident.text : ''}${flagTxt}`;
   // Projects — multi-line with descriptions (Feature 1)
   let lines = [`${name} · ${dateStr} ${slot}`];
@@ -325,7 +325,7 @@ function getSlotTitleHtml(person, dateStr, slot, slotData) {
   const flagTxt = slotData && slotData.remote ? ' + Remote' : slotData && slotData.offsite ? ' + Off-site' : '';
   if (!slotData || slotData.state === 'not_filled') return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Not filled${esc(flagTxt)}</div>`;
   if (slotData.state === 'undetermined') return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Undetermined project${esc(flagTxt)}</div>`;
-  if (slotData.away) return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Away: ${esc(slotData.away.type)}${slotData.away.note ? ' ('+esc(slotData.away.note)+')' : ''}${esc(flagTxt)}</div>`;
+  if (slotData.away) return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Away: ${esc(slotData.away.type)}${slotData.away.tentative?' (tentative)':''}${slotData.away.note ? ' ('+esc(slotData.away.note)+')' : ''}${esc(flagTxt)}</div>`;
   if (slotData.incident) return `<div class="tt-header">${esc(name)} · ${dateStr} ${slot} · Incident${slotData.incident.text ? ': '+esc(slotData.incident.text) : ''}${esc(flagTxt)}</div>`;
   let html = `<div class="tt-header">${esc(name)} · ${dateStr} ${slot}</div>`;
   if (slotData.projects) slotData.projects.forEach(pr => {
@@ -343,7 +343,7 @@ function getSlotLabel(slotData) {
   if (!slotData || slotData.state === 'not_filled') return '—';
   const flagIcon = slotData.remote ? '🏠' : slotData.offsite ? '🏢' : '';
   if (slotData.state === 'undetermined') return (flagIcon ? flagIcon + ' ?' : '?');
-  if (slotData.away) return (flagIcon ? flagIcon + ' ' : '') + slotData.away.type.replace(/_/g,' ');
+  if (slotData.away) return (flagIcon ? flagIcon + ' ' : '') + slotData.away.type.replace(/_/g,' ') + (slotData.away.tentative ? ' (tentative)' : '');
   if (slotData.incident) return (flagIcon ? flagIcon + ' ' : '') + 'Incident' + (slotData.incident.text ? ': ' + slotData.incident.text : '');
   let parts = [];
   if (flagIcon) parts.push(flagIcon);
@@ -361,7 +361,7 @@ function isHoliday(dateStr) {
 }
 
 // ===== ON-CALL / ROTATION =====
-function isOnCall(personId, weekStart) { return !!(State.oncall[weekStart] || []).includes(personId); }
+function isOnCall(personId, weekStart) { return (State.oncall[weekStart] || []).some(e => e.person_id === personId); }
 function isRunPerson(personId, weekStart) { return !!(State.rotation[weekStart] || []).includes(personId); }
 function getRunPeople(weekStart) { return getActivePeople().filter(p => isRunPerson(p.id, weekStart)); }
 // collectRunNotes compiles every run-note for a person across a week into a
@@ -372,10 +372,30 @@ function collectRunNotes(personId, weekStart) {
   days.forEach(d => { const ds = fmtDate(d); ['am','pm'].forEach(slot => { const sd = getSlot(personId, ds, slot); if (sd && sd.run && sd.run_note) bits.push(`${ds} ${slot.toUpperCase()}: ${sd.run_note}`); }); });
   return bits.join('\n');
 }
+function onCallComment(personId, weekStart) { const e = (State.oncall[weekStart] || []).find(x => x.person_id === personId); return e ? e.comment : ''; }
 async function toggleOnCall(personId, weekStart) {
-  if (isOnCall(personId, weekStart)) { await API.del('/oncall', { person_id: personId, week_start: weekStart }); State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(id => id !== personId); }
-  else { await API.put('/oncall', {person_id:personId, week_start:weekStart}); if (!State.oncall[weekStart]) State.oncall[weekStart] = []; State.oncall[weekStart].push(personId); }
+  if (isOnCall(personId, weekStart)) { await API.del('/oncall', { person_id: personId, week_start: weekStart }); State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(e => e.person_id !== personId); }
+  else { await API.put('/oncall', {person_id:personId, week_start:weekStart, comment:''}); if (!State.oncall[weekStart]) State.oncall[weekStart] = []; State.oncall[weekStart].push({person_id:personId, comment:''}); }
   render();
+}
+// Set/update an on-call assignment (person + week + comment). Used by the On-call tab.
+async function setOnCallAssignment(personId, weekStart, comment) {
+  await API.put('/oncall', { person_id: personId, week_start: weekStart, comment });
+  if (!State.oncall[weekStart]) State.oncall[weekStart] = [];
+  const i = State.oncall[weekStart].findIndex(e => e.person_id === personId);
+  if (i >= 0) State.oncall[weekStart][i].comment = comment; else State.oncall[weekStart].push({person_id:personId, comment});
+}
+async function removeOnCallAssignment(personId, weekStart) {
+  await API.del('/oncall', { person_id: personId, week_start: weekStart });
+  State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(e => e.person_id !== personId);
+}
+async function changeOnCallPerson(oldPid, weekStart, newPid) {
+  const c = onCallComment(oldPid, weekStart);
+  await API.del('/oncall', { person_id: oldPid, week_start: weekStart });
+  State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(e => e.person_id !== oldPid);
+  await API.put('/oncall', { person_id: newPid, week_start: weekStart, comment: c });
+  if (!State.oncall[weekStart]) State.oncall[weekStart] = [];
+  State.oncall[weekStart].push({person_id:newPid, comment:c});
 }
 
 // ===== RUN COVERAGE =====
@@ -416,6 +436,10 @@ let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name',
 let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeProjCount = 1;
 let _showWeekend = false;
 let teamFilter = '';
+// On-call tab state: selected year, trimester (0-3), and extra weeks added
+// beyond the trimester boundaries. oncallLoadedYear tracks which year's data
+// is currently held in State.oncall.
+let oncallYear = null, oncallTri = null, oncallExtraBefore = 0, oncallExtraAfter = 0, oncallLoadedYear = null;
 // Activity tab filters (persist across re-renders while the tab is open)
 let activityFilter = { type: 'all', person: 'all', actor: 'all', search: '' };
 // Cell-edit flash: queue of {pid,date,slot,origin} to glow after the next render.
@@ -474,6 +498,7 @@ function render() {
     case 'team': renderTeamGrid(main); break;
     case 'availability': renderAvailability(main); break;
     case 'run': renderRunCoverage(main); break;
+    case 'oncall': renderOnCall(main); break;
     case 'guests': renderGuests(main); break;
     case 'archived': renderArchived(main); break;
     case 'people': renderPeople(main); break;
@@ -610,8 +635,9 @@ function renderTeamGrid(container) {
   let html = '<div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Person</th>';
   weeks.forEach((w, wi) => { const ws = formatWeekStart(w); const wn = getWeekNumber(w); const sep = wi > 0 ? ' week-start' : ''; html += `<th colspan="${slotsPerWeek}" class="${sep}">W${wn} ${ws.slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
+  let hdrCol = 0;
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" class="day-header${sep}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const sep = (di === 0 && wi > 0) ? ' week-start' : ''; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" data-col="${hdrCol}" class="day-header${sep}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; hdrCol += 2; });
   });
   html += '</tr></thead><tbody>';
   // Build allSlots
@@ -653,10 +679,6 @@ function renderTeamGrid(container) {
   const runTarget = State.settings.run_target_persons || 3;
   peopleSorted.forEach((p, rowIdx) => {
     if (teamGroupBy === 'sub_team') { const st = p.is_guest ? 'Guests' : (p.sub_team || 'Other'); if (st !== lastSubTeam) { lastSubTeam = st; html += `<tr class="subteam-row"><td colspan="${allSlots.length+1}">${escapeHtml(st)}</td></tr>`; } }
-    const firstWeekStart = formatWeekStart(weeks[0]);
-    const onCallAnyWeek = weeks.some(w => isOnCall(p.id, formatWeekStart(w)));
-    const onCallWeeks = weeks.filter(w => isOnCall(p.id, formatWeekStart(w))).map(w => 'W'+getWeekNumber(w));
-    const onCallTip = onCallWeeks.length > 0 ? 'On-call: '+onCallWeeks.join(', ') : 'Click to toggle on-call W'+getWeekNumber(weeks[0]);
     // Conflict warning: away + on-call/run in same week
     let conflictWarn = '';
     weeks.forEach(w => {
@@ -672,9 +694,8 @@ function renderTeamGrid(container) {
         }
       }
     });
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')" title="${esc(p.role||'')} · ${esc(p.sub_team||'')}">${esc(p.avatar_emoji)} ${esc(p.name)}${conflictWarn}`;
-    if (canEdit()) html += `<button class="oncall-btn${onCallAnyWeek?' active':''}" onclick="event.stopPropagation();toggleOnCall('${p.id}','${firstWeekStart}')" title="${onCallTip}">📞</button>`;
-    html += '</td>';
+    html += `<tr><td class="person-col" data-row="${rowIdx}" onclick="showIndividual('${p.id}')" title="${esc(p.role||'')} · ${esc(p.sub_team||'')}">${esc(p.avatar_emoji)} ${esc(p.name)}${conflictWarn}`;
+      html += '</td>';
     let prevMergeKey = null;
     allSlots.forEach((sl, colIdx) => {
       const sd = getSlot(p.id, sl.date, sl.slot); const cls = getSlotClass(sd); const label = getCellLabel(sd);
@@ -728,12 +749,174 @@ function renderTeamGrid(container) {
     <span><span class="half-day not-filled offsite" style="display:inline-block;width:12px;height:12px"></span> 🏢 Off-site</span>
   </div>`;
   container.innerHTML = html;
+  setupGridCrosshair(container.querySelector('.grid-table'));
+}
+
+// Crosshair: hovering a name (row), a day header (column), or a half-day
+// cell (row + column) highlights the corresponding row/column.
+function setupGridCrosshair(table) {
+  if (!table) return;
+  let cur = null;
+  function clear() { if (cur == null) return; table.querySelectorAll('.hl-row,.hl-col').forEach(el => el.classList.remove('hl-row','hl-col')); cur = null; }
+  function hlRow(r) { table.querySelectorAll(`td[data-row="${r}"]`).forEach(el => el.classList.add('hl-row')); }
+  function hlCol(c) { table.querySelectorAll(`td[data-col="${c}"],th[data-col="${c}"]`).forEach(el => el.classList.add('hl-col')); }
+  table.addEventListener('mouseover', e => {
+    const el = e.target.closest('td.half-day,td.person-col,th.day-header'); if (!el) return;
+    const r = el.dataset.row, c = el.dataset.col;
+    let c2 = null;
+    if (el.classList.contains('day-header') && c != null) c2 = String(+c + 1); // header spans AM+PM
+    const key = r + '|' + c + '|' + c2;
+    if (cur === key) return;
+    clear();
+    if (r != null) hlRow(r);
+    if (c != null) { hlCol(c); if (c2 != null) hlCol(c2); }
+    cur = key;
+  });
+  table.addEventListener('mouseleave', clear);
 }
 
 // Clicking a person name in the team grid opens the My Week view for that person.
 function showIndividual(personId) { currentPersonId = personId; currentView = 'myweek'; render(); }
 
 // ===== RUN COVERAGE VIEW =====
+// ===== ON-CALL VIEW =====
+// Trimester = 3 calendar months (Jan-Mar / Apr-Jun / Jul-Sep / Oct-Dec). The
+// table shows the ISO weeks whose Monday falls within the selected trimester,
+// plus optional extra weeks added before/after. Each (week, person) assignment
+// carries an optional free-text comment. Stats show each person's share of
+// on-call for the selected year and the selected trimester.
+
+// Returns the week-start (Monday) date strings for a trimester, optionally
+// extended by extra weeks on either side.
+function trimesterWeeks(year, tri, extraBefore, extraAfter) {
+  const startMonth = tri * 3;
+  const triStart = new Date(year, startMonth, 1);
+  const triEnd = new Date(year, startMonth + 3, 0); // last day of end month
+  // first Monday on/after triStart
+  let mon = new Date(triStart);
+  const dow = (mon.getDay() + 6) % 7; // 0=Mon..6=Sun
+  mon.setDate(mon.getDate() - dow);    // Monday of triStart's week (<= triStart)
+  if (mon < triStart) mon.setDate(mon.getDate() + 7);
+  const weeks = [];
+  let cur = new Date(mon);
+  while (cur <= triEnd) { weeks.push(fmtDate(cur)); cur = new Date(cur); cur.setDate(cur.getDate() + 7); }
+  for (let i = 0; i < extraBefore; i++) { const x = parseDate(weeks[0]); x.setDate(x.getDate() - 7); weeks.unshift(fmtDate(x)); }
+  for (let i = 0; i < extraAfter; i++) { const x = parseDate(weeks[weeks.length - 1]); x.setDate(x.getDate() + 7); weeks.push(fmtDate(x)); }
+  return weeks;
+}
+
+function weekLabel(ws) {
+  const d = parseDate(ws); const e = new Date(d); e.setDate(e.getDate() + 6);
+  return `W${getWeekNumber(d)} · ${ws.slice(5)}–${fmtDate(e).slice(5)}`;
+}
+
+// Count on-call assignments per person for week_start in [startStr, endStr].
+function oncallCounts(startStr, endStr) {
+  const counts = {}; let total = 0;
+  Object.entries(State.oncall).forEach(([ws, entries]) => {
+    if (ws >= startStr && ws <= endStr) {
+      (entries || []).forEach(e => { counts[e.person_id] = (counts[e.person_id] || 0) + 1; total++; });
+    }
+  });
+  return { counts, total };
+}
+
+function renderOnCall(container) {
+  if (oncallYear == null) oncallYear = new Date().getFullYear();
+  if (oncallTri == null) oncallTri = Math.floor(new Date().getMonth() / 3);
+  const yStart = `${oncallYear}/01/01`, yEnd = `${oncallYear}/12/31`;
+  if (oncallLoadedYear !== oncallYear) {
+    container.innerHTML = '<h2>On Call</h2><p style="color:var(--fg-muted)">Loading…</p>';
+    API.get(`/oncall?start=${yStart}&end=${yEnd}`).then(d => { State.oncall = d || {}; oncallLoadedYear = oncallYear; renderOnCallBuild(container); });
+    return;
+  }
+  renderOnCallBuild(container);
+}
+
+function renderOnCallBuild(container) {
+  const people = getActivePeople();
+  const triNames = ['Jan–Mar', 'Apr–Jun', 'Jul–Sep', 'Oct–Dec'];
+  const weeks = trimesterWeeks(oncallYear, oncallTri, oncallExtraBefore, oncallExtraAfter);
+
+  function peopleOptions(selected) {
+    return people.map(p => `<option value="${p.id}" ${p.id === selected ? 'selected' : ''}>${esc(p.avatar_emoji || '👤')} ${esc(p.name)}</option>`).join('');
+  }
+
+  let html = '<h2>On Call</h2>';
+  // Trimester navigation + year selector + extra-week buttons.
+  html += `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+    <button onclick="oncallTriPrev()">◀</button>
+    <strong style="min-width:120px;text-align:center">${triNames[oncallTri]} ${oncallYear}</strong>
+    <button onclick="oncallTriNext()">▶</button>
+    <label style="margin-left:12px">Year <select id="oncall-year-sel" onchange="oncallYear=+this.value;oncallLoadedYear=null;oncallExtraBefore=0;oncallExtraAfter=0;render()">${[oncallYear-2,oncallYear-1,oncallYear,oncallYear+1,oncallYear+2].map(y=>`<option value="${y}" ${y===oncallYear?'selected':''}>${y}</option>`).join('')}</select></label>
+    <button onclick="oncallExtraBefore++;render()">＋ week before</button>
+    <button onclick="oncallExtraAfter++;render()">＋ week after</button>
+    ${(oncallExtraBefore||oncallExtraAfter)?`<button onclick="oncallExtraBefore=0;oncallExtraAfter=0;render()" style="font-size:.75rem">reset extra</button>`:''}
+  </div>`;
+
+  // Weeks table.
+  html += '<table class="grid-table" style="width:100%;margin-bottom:16px"><thead><tr><th style="width:160px;text-align:left">Week</th><th>On-call person</th><th>Comment</th><th style="width:40px"></th></tr></thead><tbody>';
+  weeks.forEach(ws => {
+    const entries = (State.oncall[ws] || []).filter(e => people.some(p => p.id === e.person_id));
+    const n = entries.length;
+    html += `<tr>`;
+    html += `<td rowspan="${n + 1}" style="text-align:left;white-space:nowrap">${weekLabel(ws)}</td>`;
+    if (n === 0) {
+      html += `<td colspan="3" style="color:var(--fg-muted)">No on-call — <button onclick="addOncall('${ws}')" style="font-size:.75rem">＋ assign</button></td>`;
+    } else {
+      const e = entries[0];
+      html += `<td><select onchange="changeOnCallPerson('${e.person_id}','${ws}',this.value);render()" style="width:auto;font-size:.8rem">${peopleOptions(e.person_id)}</select></td>`;
+      html += `<td><input type="text" value="${esc(e.comment)}" placeholder="e.g. triggered INC-99" onchange="setOnCallAssignment('${e.person_id}','${ws}',this.value);render()" style="font-size:.8rem"></td>`;
+      html += `<td><button onclick="removeOnCallAssignment('${e.person_id}','${ws}');render()" style="font-size:.75rem;padding:1px 6px">✕</button></td>`;
+    }
+    html += `</tr>`;
+    for (let i = 1; i < n; i++) {
+      const e = entries[i];
+      html += `<tr>`;
+      html += `<td><select onchange="changeOnCallPerson('${e.person_id}','${ws}',this.value);render()" style="width:auto;font-size:.8rem">${peopleOptions(e.person_id)}</select></td>`;
+      html += `<td><input type="text" value="${esc(e.comment)}" placeholder="e.g. triggered INC-99" onchange="setOnCallAssignment('${e.person_id}','${ws}',this.value);render()" style="font-size:.8rem"></td>`;
+      html += `<td><button onclick="removeOnCallAssignment('${e.person_id}','${ws}');render()" style="font-size:.75rem;padding:1px 6px">✕</button></td>`;
+      html += `</tr>`;
+    }
+    html += `<tr><td colspan="3" style="border:none;padding:2px"><button onclick="addOncall('${ws}')" style="font-size:.7rem;padding:1px 6px">＋ add person</button></td></tr>`;
+  });
+  html += '</tbody></table>';
+
+  // Statistics.
+  const yStart = `${oncallYear}/01/01`, yEnd = `${oncallYear}/12/31`;
+  const triStart = fmtDate(new Date(oncallYear, oncallTri * 3, 1));
+  const triEnd = fmtDate(new Date(oncallYear, oncallTri * 3 + 3, 0));
+  function statsBlock(title, startStr, endStr) {
+    const { counts, total } = oncallCounts(startStr, endStr);
+    let h = `<h3 style="margin-top:16px">${title}</h3>`;
+    if (total === 0) { h += '<p style="color:var(--fg-muted)">No on-call assignments.</p>'; return h; }
+    h += '<table class="grid-table" style="width:auto"><thead><tr><th style="text-align:left">Person</th><th>Weeks</th><th>Share</th></tr></thead><tbody>';
+    const rows = people.map(p => ({ p, c: counts[p.id] || 0 })).filter(r => r.c > 0).sort((a, b) => b.c - a.c);
+    rows.forEach(r => {
+      const pct = total > 0 ? (r.c / total * 100) : 0;
+      h += `<tr><td style="text-align:left">${esc(r.p.avatar_emoji || '👤')} ${esc(r.p.name)}</td><td>${r.c}</td><td>${pct.toFixed(0)}%</td></tr>`;
+    });
+    h += `</tbody></table>`;
+    return h;
+  }
+  html += `<div style="display:flex;gap:24px;flex-wrap:wrap">`;
+  html += statsBlock(`On-call share — ${oncallYear} (full year)`, yStart, yEnd);
+  html += statsBlock(`On-call share — ${triNames[oncallTri]} ${oncallYear}`, triStart, triEnd);
+  html += `</div>`;
+
+  container.innerHTML = html;
+}
+
+function oncallTriPrev() { oncallTri--; if (oncallTri < 0) { oncallTri = 3; oncallYear--; oncallLoadedYear = null; } oncallExtraBefore = 0; oncallExtraAfter = 0; render(); }
+function oncallTriNext() { oncallTri++; if (oncallTri > 3) { oncallTri = 0; oncallYear++; oncallLoadedYear = null; } oncallExtraBefore = 0; oncallExtraAfter = 0; render(); }
+async function addOncall(ws) {
+  const assigned = (State.oncall[ws] || []).map(e => e.person_id);
+  const avail = getActivePeople().find(p => !assigned.includes(p.id));
+  if (!avail) { toast('No available person to assign', 'error'); return; }
+  await setOnCallAssignment(avail.id, ws, '');
+  render();
+}
+
 function renderRunCoverage(container) {
   const weeks = getVisibleWeeks(); const mode = State.settings.run_mode; const runTarget = State.settings.run_target_persons || 3;
   let html = `<h2>Run Coverage — Target: ${runTarget} persons per half-day</h2><div style="margin-bottom:8px;display:flex;gap:8px;align-items:center">`;
@@ -792,7 +975,7 @@ function renderAvailability(container) {
     const amCls = getSlotClass(amSd), pmCls = getSlotClass(pmSd);
     const amBg = amCls.includes('project') && projectColorBg(amSd) ? ` style="background:${projectColorBg(amSd)}"` : '';
     const pmBg = pmCls.includes('project') && projectColorBg(pmSd) ? ` style="background:${projectColorBg(pmSd)}"` : '';
-    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run${sd.run_note?': '+sd.run_note:''}` : (rem+pn||'Available'); }
+    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}${sd.away.tentative?' (tentative)':''}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run${sd.run_note?': '+sd.run_note:''}` : (rem+pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
     html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}" data-person="${p.id}" data-date="${selDate}" data-slot="am"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}" data-person="${p.id}" data-date="${selDate}" data-slot="pm"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
@@ -812,14 +995,15 @@ function renderGuests(container) {
   let html = '<h2>Guests</h2><div class="grid-container"><table class="grid-table"><thead><tr><th class="person-col">Guest</th>';
   weeks.forEach((w, wi) => { html += `<th colspan="${slotsPerWeek}" class="${wi>0?'week-start':''}">W${getWeekNumber(w)} ${formatWeekStart(w).slice(5)}</th>`; });
   html += '</tr><tr><th class="person-col"></th>';
+  let hdrCol = 0;
   weeks.forEach((w, wi) => { const days = getWeekDays(w); const dayNames = _showWeekend ? ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'] : ['Mon','Tue','Wed','Thu','Fri'];
-    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; });
+    days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const hl = isHoliday(fmtDate(d)); html += `<th colspan="2" data-col="${hdrCol}" class="day-header${di===0&&wi>0?' week-start':''}">${dayNames[di]} <span class="day-num">/${d.getDate()}</span>${hl ? `<span class="holiday-badge" title="${esc(hl)}">${esc(hl)}</span>` : ''}</th>`; hdrCol += 2; });
   });
   html += '</tr></thead><tbody>';
   const allSlots = [];
   weeks.forEach((w, wi) => { const days = getWeekDays(w); days.forEach((d, di) => { if (di >= 5 && !_showWeekend) return; const ds = fmtDate(d); ['am','pm'].forEach(slot => allSlots.push({date:ds, slot, weekIdx:wi, dayIdx:di})); }); });
   guests.forEach((p, rowIdx) => {
-    html += `<tr><td class="person-col" onclick="showIndividual('${p.id}')">${esc(p.avatar_emoji)} ${esc(p.name)}</td>`;
+    html += `<tr><td class="person-col" data-row="${rowIdx}" onclick="showIndividual('${p.id}')">${esc(p.avatar_emoji)} ${esc(p.name)}</td>`;
     let prevMergeKey = null;
     allSlots.forEach((sl, colIdx) => {
       const sd = getSlot(p.id, sl.date, sl.slot); const cls = getSlotClass(sd); const label = getCellLabel(sd);
@@ -836,6 +1020,7 @@ function renderGuests(container) {
   });
   html += `</tbody></table></div><div style="display:flex;gap:8px;align-items:center;margin-top:8px"><button onclick="scrollOffset--;savePrefs();API.reloadPlanning().then(render)">◀ Earlier</button><button onclick="scrollOffset=0;savePrefs();API.reloadPlanning().then(render)">Today</button><button onclick="scrollOffset++;savePrefs();API.reloadPlanning().then(render)">Later ▶</button></div>`;
   container.innerHTML = html;
+  setupGridCrosshair(container.querySelector('.grid-table'));
 }
 
 // ===== ARCHIVED VIEW =====
@@ -1562,6 +1747,7 @@ function openUnifiedEditor(cells) {
   const srcProjects = (src && src.projects && src.projects.length) ? src.projects : [{ name: '', pct: 100 }];
   const srcAwayType = (src && src.away) ? src.away.type : 'vacation';
   const srcAwayNote = (src && src.away) ? (src.away.note || '') : '';
+  const srcAwayTentative = !!(src && src.away && src.away.tentative);
   const srcIncidentText = (src && src.incident) ? (src.incident.text || '') : '';
   const srcRunNote = (src && src.run_note) ? src.run_note : '';
 
@@ -1581,7 +1767,7 @@ function openUnifiedEditor(cells) {
   html += `<div style="margin-top:8px">${triToggleHtml('uni-run', '🏃 Run duty', runTri0, 'run', allowGreyRun)}</div>`;
   html += `<input type="text" id="uni-run-note" value="${escapeHtml(srcRunNote)}" maxlength="2000" placeholder="e.g. INC-1234 — heads-up for colleagues (applies to run slots)" ${runTri0==='tick'?'':'disabled'} style="margin-top:4px;width:100%;font-size:.8rem"></div>`;
   // Away tab
-  html += `<div id="uni-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="uni-away-type">${awayTypes.map(t=>`<option value="${t}" ${srcAwayType===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="uni-away-note" value="${escapeHtml(srcAwayNote)}" placeholder="e.g. Family vacation"></div><p style="color:var(--fg-muted);font-size:.8rem;padding:4px 0">Mutually exclusive with project/run/incident.</p></div>`;
+  html += `<div id="uni-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="uni-away-type">${awayTypes.map(t=>`<option value="${t}" ${srcAwayType===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="uni-away-note" value="${escapeHtml(srcAwayNote)}" placeholder="e.g. Family vacation"></div><div style="margin-bottom:6px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="uni-away-tentative" ${srcAwayTentative?'checked':''} style="width:auto"> Tentative (unconfirmed intent — shown hatched)</label></div><p style="color:var(--fg-muted);font-size:.8rem;padding:4px 0">Mutually exclusive with project/run/incident.</p></div>`;
   // Incident tab
   html += `<div id="uni-tab-incident" class="tab-content ${activeTab!=='incident'?'hidden':''}"><div class="form-row"><label>Text (e.g. ticket number)</label><input type="text" id="uni-incident-text" value="${escapeHtml(srcIncidentText)}" placeholder="e.g. INC-1234"></div><p style="color:var(--fg-muted);font-size:.8rem;padding:4px 0">Mutually exclusive with project/run/away.</p></div>`;
   // Undetermined tab
@@ -1674,6 +1860,7 @@ async function applyUnifiedEditor() {
   const editorRunNote = (document.getElementById('uni-run-note')?.value || '').slice(0, 2000);
   const awayType = document.getElementById('uni-away-type')?.value || 'vacation';
   const awayNote = document.getElementById('uni-away-note')?.value || '';
+  const awayTentative = !!document.getElementById('uni-away-tentative')?.checked;
   const incidentText = document.getElementById('uni-incident-text')?.value.trim() || '';
 
   const cells = getRangeEditorCells();
@@ -1693,7 +1880,7 @@ async function applyUnifiedEditor() {
 
     let data;
     if (tab === 'away') {
-      data = { state: 'filled', away: { type: awayType, note: awayNote }, incident: null, projects: [], run: false, run_note: exRunNote, remote, offsite };
+      data = { state: 'filled', away: { type: awayType, note: awayNote, tentative: awayTentative }, incident: null, projects: [], run: false, run_note: exRunNote, remote, offsite };
     } else if (tab === 'incident') {
       data = { state: 'filled', away: null, incident: { text: incidentText }, projects: [], run: false, run_note: exRunNote, remote, offsite };
     } else if (tab === 'undetermined') {

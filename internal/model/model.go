@@ -45,8 +45,9 @@ type SlotData struct {
 }
 
 type AwayData struct {
-	Type string `json:"type"`
-	Note string `json:"note"`
+	Type      string `json:"type"`
+	Note      string `json:"note"`
+	Tentative bool   `json:"tentative"`
 }
 
 type IncidentData struct {

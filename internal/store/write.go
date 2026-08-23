@@ -109,9 +109,13 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 	if data.Offsite {
 		offsiteVal = 1
 	}
+	tentativeVal := 0
+	if data.Away != nil && data.Away.Tentative {
+		tentativeVal = 1
+	}
 
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote)
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note, tentative) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote, tentativeVal)
 	return err
 }
 
@@ -168,8 +172,12 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Offsite {
 				offsiteVal = 1
 			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote)
+			tentativeVal := 0
+			if data.Away != nil && data.Away.Tentative {
+				tentativeVal = 1
+			}
+			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note, tentative) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote, tentativeVal)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -344,9 +352,10 @@ func (s *Store) UpsertProjectByName(p model.Project) (bool, error) {
 
 // ===== On-Call (write) =====
 
-func (s *Store) SetOnCall(personID, weekStart string, isOnCall bool) error {
+func (s *Store) SetOnCall(personID, weekStart, comment string, isOnCall bool) error {
 	if isOnCall {
-		_, err := s.db.Exec("INSERT OR REPLACE INTO oncall (person_id, week_start) VALUES (?, ?)", personID, weekStart)
+		_, err := s.db.Exec(`INSERT INTO oncall (person_id, week_start, comment) VALUES (?, ?, ?)
+			ON CONFLICT(person_id, week_start) DO UPDATE SET comment=excluded.comment`, personID, weekStart, comment)
 		return err
 	}
 	_, err := s.db.Exec("DELETE FROM oncall WHERE person_id=? AND week_start=?", personID, weekStart)
@@ -501,7 +510,7 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 	for _, ep := range data.Planning {
 		away := (*model.AwayData)(nil)
 		if ep.AwayType != "" {
-			away = &model.AwayData{Type: ep.AwayType, Note: ep.AwayNote}
+			away = &model.AwayData{Type: ep.AwayType, Note: ep.AwayNote, Tentative: ep.Tentative}
 		}
 		incident := (*model.IncidentData)(nil)
 		if ep.Incident {
@@ -527,7 +536,7 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 
 	// Import on-call
 	for _, oc := range data.OnCall {
-		if e := s.SetOnCall(oc.PersonID, oc.WeekStart, true); e != nil {
+		if e := s.SetOnCall(oc.PersonID, oc.WeekStart, oc.Comment, true); e != nil {
 			return created, updated, fmt.Errorf("import oncall %s %s: %w", oc.PersonID, oc.WeekStart, e)
 		}
 	}

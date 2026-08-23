@@ -329,7 +329,7 @@ func (r *Router) getOnCall(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	if result == nil {
-		result = map[string][]string{}
+		result = map[string][]store.OnCallEntry{}
 	}
 	writeJSON(w, http.StatusOK, result)
 }
