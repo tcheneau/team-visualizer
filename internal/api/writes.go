@@ -191,7 +191,7 @@ func (r *Router) setSlotRange(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate, "data": body.Data})
+	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "start_slot": body.StartSlot, "end_date": body.EndDate, "end_slot": body.EndSlot, "data": body.Data})
 	meta := slotRangeMeta(body.PersonIDs, body.Data)
 	meta["start_date"] = body.StartDate
 	meta["start_slot"] = body.StartSlot
@@ -222,7 +222,7 @@ func (r *Router) clearSlotRange(w http.ResponseWriter, req *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	r.hub.Broadcast("planning_range_cleared", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate})
+	r.hub.Broadcast("planning_range_cleared", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "start_slot": body.StartSlot, "end_date": body.EndDate, "end_slot": body.EndSlot})
 	meta := slotRangeMeta(body.PersonIDs, model.SlotData{})
 	meta["start_date"] = body.StartDate
 	meta["start_slot"] = body.StartSlot

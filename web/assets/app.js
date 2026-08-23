@@ -165,9 +165,9 @@ const WS = {
       case 'person_updated': { const i = State.people.findIndex(p => p.id === msg.data.id); if (i >= 0) State.people[i] = msg.data; break; }
       case 'person_deleted': State.people = State.people.filter(p => p.id !== msg.data.id); break;
       case 'person_archived': case 'person_unarchived': { const p = getPerson(msg.data.id); if (p) { p.status = msg.type === 'person_archived' ? 'archived' : 'active'; p.archived_date = msg.type === 'person_archived' ? fmtDate(new Date()) : ''; } break; }
-      case 'planning_updated': { if (State.undoing) break; const e = msg.data; State.planning[getSlotKey(e.person_id, e.date, e.slot)] = e.data; break; }
-      case 'planning_cleared': { if (State.undoing) break; const e = msg.data; delete State.planning[getSlotKey(e.person_id, e.date, e.slot)]; break; }
-      case 'planning_range': case 'planning_range_cleared': API.reloadPlanning().then(render); return;
+      case 'planning_updated': { if (State.undoing) break; const e = msg.data; const k = getSlotKey(e.person_id, e.date, e.slot); if (isRecentSelf([k])) return; queueFlash([{pid:e.person_id, date:e.date, slot:e.slot}], 'remote'); State.planning[k] = e.data; break; }
+      case 'planning_cleared': { if (State.undoing) break; const e = msg.data; const k = getSlotKey(e.person_id, e.date, e.slot); if (isRecentSelf([k])) return; queueFlash([{pid:e.person_id, date:e.date, slot:e.slot}], 'remote'); delete State.planning[k]; break; }
+      case 'planning_range': case 'planning_range_cleared': { const r = rangeSlotKeys(msg.data); if (isRecentSelf(r.keys)) return; queueFlash(r.cells, 'remote'); API.reloadPlanning().then(render); return; }
       case 'planning_copied': case 'planning_pruned': case 'data_reset': case 'data_imported': API.reloadPlanning().then(render); return;
       case 'project_added': if (!State.projects.find(p => p.id === msg.data.id)) State.projects.push(msg.data); break;
       case 'project_updated': { const i = State.projects.findIndex(p => p.id === msg.data.id); if (i >= 0) State.projects[i] = msg.data; break; }
@@ -177,7 +177,7 @@ const WS = {
       case 'settings_updated': State.settings = Object.assign({}, State.settings, msg.data); break;
       case 'holidays_imported': API.get('/holidays').then(d => { State.holidays = d || []; render(); }); return;
       case 'presence': State.presence = msg.data || []; renderPresence(); break;
-      case 'activity_new': { if (!Array.isArray(State.activity)) State.activity=[]; State.activity.unshift(msg.data); if (State.activity.length>100) State.activity.pop(); if (currentView==='activity') render(); break; }
+      case 'activity_new': { if (!Array.isArray(State.activity)) State.activity=[]; State.activity.unshift(msg.data); if (State.activity.length>100) State.activity.pop(); if (currentView==='activity') render(); return; }
     }
     render();
   },
@@ -220,6 +220,9 @@ async function undo() {
   } finally {
     State.undoing = false;
   }
+  // Flash the cells that were reverted by this undo (self-coloured).
+  const undoneKeys = Object.keys(snap).filter(k => { const [pid, date, slot] = k.split('|'); return snap[k] !== null || State.planning[k] !== undefined; });
+  undoneKeys.forEach(k => { const [pid, date, slot] = k.split('|'); queueFlash([{pid, date, slot}], 'self'); });
   render();
 }
 async function redo() {
@@ -247,6 +250,9 @@ async function redo() {
   } finally {
     State.undoing = false;
   }
+  // Flash the cells that were re-applied by this redo (self-coloured).
+  const redoneKeys = Object.keys(snap).filter(k => { const [pid, date, slot] = k.split('|'); return snap[k] !== null || State.planning[k] !== undefined; });
+  redoneKeys.forEach(k => { const [pid, date, slot] = k.split('|'); queueFlash([{pid, date, slot}], 'self'); });
   render();
 }
 
@@ -405,6 +411,12 @@ let _showWeekend = false;
 let teamFilter = '';
 // Activity tab filters (persist across re-renders while the tab is open)
 let activityFilter = { type: 'all', person: 'all', actor: 'all', search: '' };
+// Cell-edit flash: queue of {pid,date,slot,origin} to glow after the next render.
+// origin is 'self' (local edit / undo / redo) or 'remote' (WS change from
+// another client). The author's own WS echo is suppressed via recentSelfFlash.
+let pendingFlash = [];
+let recentSelfFlash = new Map(); // slotKey -> expiry timestamp (ms)
+const FLASH_SELF_SUPPRESS_MS = 2500;
 
 // Persistent view prefs (localStorage)
 const PREFS_KEYS = ['scrollOffset','teamGroupBy','_showWeekend','teamShowGuests','currentView','availabilityDayOffset','teamFilter'];
@@ -470,7 +482,72 @@ function render() {
   }
   renderPresence();
   renderMePicker();
+  applyPendingFlash();
 }
+
+// ===== CELL-EDIT FLASH =====
+// Queue slot keys to glow after the next render. cells may be either
+// {pid,date,slot} objects or 'pid|date|slot' strings.
+function queueFlash(cells, origin) {
+  if (!cells) return;
+  const arr = Array.isArray(cells) ? cells : [cells];
+  arr.forEach(c => {
+    const pid = c.pid || c.personId || c.person_id;
+    const date = c.date;
+    const slot = c.slot;
+    if (!pid || !date || !slot) return;
+    pendingFlash.push({ pid, date, slot, origin });
+    if (origin === 'self') recentSelfFlash.set(getSlotKey(pid, date, slot), Date.now() + FLASH_SELF_SUPPRESS_MS);
+  });
+}
+// Returns true if any of the given slot keys were flashed as 'self' recently
+// (used to suppress the author's own WS echo so they don't see a second,
+// remote-coloured flash).
+function isRecentSelf(keys) {
+  const now = Date.now();
+  for (const k of keys) {
+    const exp = recentSelfFlash.get(k);
+    if (exp && exp > now) return true;
+  }
+  return false;
+}
+// Compute the slot keys for a planning_range WS payload.
+function rangeSlotKeys(data) {
+  const pids = data.person_ids || [];
+  const slots = generateSlotsInRange(data.start_date, data.start_slot || 'am', data.end_date, data.end_slot || 'pm');
+  const keys = [];
+  pids.forEach(pid => slots.forEach(sl => keys.push(getSlotKey(pid, sl.date, sl.slot))));
+  return { keys, cells: pids.flatMap(pid => slots.map(sl => ({ pid, date: sl.date, slot: sl.slot }))) };
+}
+// After render(), find the freshly created cells matching pendingFlash and
+// start the glow animation. Clears the queue.
+function applyPendingFlash() {
+  if (!pendingFlash.length) return;
+  const items = pendingFlash;
+  pendingFlash = [];
+  // Use requestAnimationFrame so the new DOM is painted first.
+  requestAnimationFrame(() => {
+    items.forEach(it => {
+      const sel = `[data-person="${CSS.escape(it.pid)}"][data-date="${CSS.escape(it.date)}"][data-slot="${CSS.escape(it.slot)}"]`;
+      document.querySelectorAll(sel).forEach(el => {
+        const cls = it.origin === 'self' ? 'flash-self' : 'flash-remote';
+        // Re-trigger the animation by removing then adding on next frame.
+        el.classList.remove('flash-self', 'flash-remote');
+        el.offsetWidth; // force reflow
+        el.classList.add(cls);
+        const cleanup = () => { el.classList.remove('flash-self', 'flash-remote'); el.removeEventListener('animationend', cleanup); };
+        el.addEventListener('animationend', cleanup);
+        // Safety: also clear after the animation duration in case animationend
+        // doesn't fire (e.g. element removed by a later render).
+        setTimeout(cleanup, 5300);
+      });
+    });
+  });
+}
+
+// Queue the cell currently open in the editor for a self-coloured flash,
+// then close the editor. Must run before closeCellEditor() nulls the vars.
+function selfFlashCell() { if (editorPersonId) queueFlash([{pid:editorPersonId, date:editorDate, slot:editorSlot}], 'self'); }
 
 function updateStatusBar() {
   const left = document.getElementById('status-left');
@@ -714,7 +791,7 @@ function renderAvailability(container) {
     function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run` : (rem+pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
-    html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
+    html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}" data-person="${p.id}" data-date="${selDate}" data-slot="am"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}" data-person="${p.id}" data-date="${selDate}" data-slot="pm"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
   });
   html += '</div>';
   let away=0,run=0,proj=0,nf=0,und=0,inc=0;
@@ -1382,7 +1459,7 @@ function renderMyWeek(container) {
         const cls = getSlotClass(sd);
         const label = getSlotLabel(sd);
         const click = canEdit() ? ` onclick="openCellEditor('${p.id}','${ds}','${slot}')"` : '';
-        html += `<div class="myweek-slot ${cls}"${click} style="flex:1;padding:12px;border-radius:6px;text-align:center;font-size:1rem;cursor:${canEdit()?'pointer':'default'}">
+        html += `<div class="myweek-slot ${cls}" data-person="${p.id}" data-date="${ds}" data-slot="${slot}"${click} style="flex:1;padding:12px;border-radius:6px;text-align:center;font-size:1rem;cursor:${canEdit()?'pointer':'default'}">
           <div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:4px">${slot.toUpperCase()}</div>
           <div>${escapeHtml(label)}</div>
         </div>`;
@@ -1486,14 +1563,14 @@ async function saveCellEditor() {
       await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot });
       delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)];
     }
-    closeCellEditor(); render(); return;
+    selfFlashCell(); closeCellEditor(); render(); return;
   }
   if (activeTab === 'undetermined') {
     pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
     const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    closeCellEditor(); render(); return;
+    selfFlashCell(); closeCellEditor(); render(); return;
   }
   if (activeTab === 'incident') {
     const text = document.getElementById('incident-text').value.trim();
@@ -1501,7 +1578,7 @@ async function saveCellEditor() {
     const data = { state: 'filled', away: null, incident: { text }, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    closeCellEditor(); render(); return;
+    selfFlashCell(); closeCellEditor(); render(); return;
   }
   if (activeTab === 'away') {
     const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
@@ -1509,7 +1586,7 @@ async function saveCellEditor() {
     const data = { state: 'filled', away: { type, note }, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
     await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
     State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    closeCellEditor(); render(); return;
+    selfFlashCell(); closeCellEditor(); render(); return;
   }
   // project tab
   const rows = document.getElementById('project-list').children; const projects = []; let total = 0;
@@ -1519,10 +1596,10 @@ async function saveCellEditor() {
   const data = { state: projects.length > 0 || window.editorRunToggle || window.editorRemoteToggle || window.editorOffsiteToggle ? 'filled' : 'not_filled', away: null, incident: null, projects, run: !!window.editorRunToggle, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
   await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
   State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-  closeCellEditor(); render();
+  selfFlashCell(); closeCellEditor(); render();
 }
-async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; closeCellEditor(); render(); }
-async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; closeCellEditor(); render(); }
+async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; selfFlashCell(); closeCellEditor(); render(); }
+async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; selfFlashCell(); closeCellEditor(); render(); }
 function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
 
 // ===== RANGE EDITOR =====
@@ -1552,9 +1629,9 @@ function removeRangeProject(row) { const list = document.getElementById('range-p
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
 function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const incidentText = document.getElementById('range-incident-text') ? document.getElementById('range-incident-text').value.trim() : ''; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); let data; if (awayType) { data = {state:'filled',away:{type:awayType,note:''},incident:null,projects:[],run:false,remote,offsite}; } else if (incidentText) { data = {state:'filled',away:null,incident:{text:incidentText},projects:[],run:false,remote,offsite}; } else if (projects.length > 0) { data = {state:'filled',away:null,incident:null,projects,run,remote,offsite}; } else if (run) { data = {state:'filled',away:null,incident:null,projects:[],run:true,remote,offsite}; } else if (remote) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:true,offsite:false}; } else if (offsite) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:false,offsite:true}; } else { data = {state:'not_filled',away:null,incident:null,projects:[],run:false}; } await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const remote = document.getElementById('range-remote') ? document.getElementById('range-remote').checked : false; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,incident:null,projects:[],run:false,remote,offsite} }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const incidentText = document.getElementById('range-incident-text') ? document.getElementById('range-incident-text').value.trim() : ''; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); let data; if (awayType) { data = {state:'filled',away:{type:awayType,note:''},incident:null,projects:[],run:false,remote,offsite}; } else if (incidentText) { data = {state:'filled',away:null,incident:{text:incidentText},projects:[],run:false,remote,offsite}; } else if (projects.length > 0) { data = {state:'filled',away:null,incident:null,projects,run,remote,offsite}; } else if (run) { data = {state:'filled',away:null,incident:null,projects:[],run:true,remote,offsite}; } else if (remote) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:true,offsite:false}; } else if (offsite) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:false,offsite:true}; } else { data = {state:'not_filled',away:null,incident:null,projects:[],run:false}; } await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const remote = document.getElementById('range-remote') ? document.getElementById('range-remote').checked : false; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,incident:null,projects:[],run:false,remote,offsite} }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
+async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
 
 // ===== MODAL SYSTEM =====
 function showModal(html) { document.getElementById('modal-content').innerHTML = html; document.getElementById('overlay').classList.remove('hidden'); }
