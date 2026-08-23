@@ -310,7 +310,7 @@ func (r *Router) updateSettings(w http.ResponseWriter, req *http.Request) {
 	for k := range settings {
 		keys = append(keys, k)
 	}
-	r.recordEvent(req.Context(), "settings_update", strings.Join(keys, ","), "")
+	r.recordEvent(req.Context(), "settings_update", strings.Join(keys, ","), "", map[string]any{"keys": keys})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -677,23 +677,36 @@ func icsEscape(s string) string {
 }
 
 // recordEvent logs an audit event and broadcasts it via WebSocket.
-func (r *Router) recordEvent(ctx context.Context, action, target, detail string) {
+// meta carries structured info (person_ids, date, slot, state, ...) so the
+// Activity tab can resolve targeted team members and render rich badges.
+func (r *Router) recordEvent(ctx context.Context, action, target, detail string, meta map[string]any) {
 	actor := ""
 	if user := auth.UserFromContext(ctx); user != nil {
 		actor = user.Username
 	}
-	if err := r.db.RecordEvent(actor, action, target, detail); err != nil {
+	metaJSON := "{}"
+	if meta != nil {
+		if b, err := json.Marshal(meta); err == nil {
+			metaJSON = string(b)
+		}
+	}
+	if err := r.db.RecordEvent(actor, action, target, detail, metaJSON); err != nil {
 		// Log but don't fail the request
 		return
 	}
 	now := time.Now().UTC().Format(time.RFC3339)
-	r.hub.Broadcast("activity_new", map[string]string{
+	broadcast := map[string]any{
 		"actor":  actor,
 		"action": action,
 		"target": target,
 		"detail": detail,
 		"ts":     now,
-	})
+		"meta":   meta,
+	}
+	if meta == nil {
+		broadcast["meta"] = map[string]any{}
+	}
+	r.hub.Broadcast("activity_new", broadcast)
 }
 
 // ===== Helpers =====

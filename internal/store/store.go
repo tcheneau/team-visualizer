@@ -3,7 +3,9 @@ package store
 import (
 	"database/sql"
 	_ "embed"
+	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -27,6 +29,9 @@ var migration005 string
 
 //go:embed migrations/006_offsite_incident.sql
 var migration006 string
+
+//go:embed migrations/007_audit_meta.sql
+var migration007 string
 
 type Store struct {
 	db *sql.DB
@@ -62,7 +67,7 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) migrate() error {
-	migrations := []string{migration001, migration002, migration003, migration004, migration005, migration006}
+	migrations := []string{migration001, migration002, migration003, migration004, migration005, migration006, migration007}
 	for i, m := range migrations {
 		// Split into individual statements and run each one. This makes
 		// ALTER TABLE / CREATE TABLE migrations idempotent: if a column or
@@ -84,7 +89,261 @@ func (s *Store) migrate() error {
 			}
 		}
 	}
+	if err := s.backfillAuditMeta(); err != nil {
+		return fmt.Errorf("backfill audit meta: %w", err)
+	}
 	return nil
+}
+
+// ===== Activity / Audit Log =====
+
+type ActivityEvent struct {
+	Id     int             `json:"id"`
+	Ts     string          `json:"ts"`
+	Actor  string          `json:"actor"`
+	Action string          `json:"action"`
+	Target string          `json:"target"`
+	Detail string          `json:"detail"`
+	Meta   json.RawMessage `json:"meta"`
+}
+
+func (s *Store) RecordEvent(actor, action, target, detail, metaJSON string) error {
+	now := time.Now().UTC().Format(time.RFC3339)
+	if metaJSON == "" {
+		metaJSON = "{}"
+	}
+	_, err := s.db.Exec("INSERT INTO audit_log (ts, actor, action, target, detail, meta) VALUES (?, ?, ?, ?, ?, ?)",
+		now, actor, action, target, detail, metaJSON)
+	return err
+}
+
+func (s *Store) ListEvents(limit int) ([]ActivityEvent, error) {
+	if limit < 1 {
+		limit = 50
+	}
+	if limit > 200 {
+		limit = 200
+	}
+	rows, err := s.db.Query("SELECT id, ts, actor, action, target, detail, meta FROM audit_log ORDER BY id DESC LIMIT ?", limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []ActivityEvent
+	for rows.Next() {
+		var e ActivityEvent
+		var metaStr string
+		if err := rows.Scan(&e.Id, &e.Ts, &e.Actor, &e.Action, &e.Target, &e.Detail, &metaStr); err != nil {
+			return nil, err
+		}
+		if metaStr == "" {
+			e.Meta = json.RawMessage("{}")
+		} else {
+			e.Meta = json.RawMessage(metaStr)
+		}
+		events = append(events, e)
+	}
+	return events, nil
+}
+
+// backfillAuditMeta parses legacy target/detail strings of existing audit_log
+// rows into the structured meta JSON column. It is best-effort: rows it cannot
+// parse are left with an empty meta and fall back to the text fields on the
+// frontend. New rows are always recorded with rich meta.
+func (s *Store) backfillAuditMeta() error {
+	rows, err := s.db.Query("SELECT id, action, target, detail FROM audit_log WHERE meta = '' OR meta IS NULL")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	type pending struct {
+		id   int
+		meta map[string]any
+	}
+	var updates []pending
+	for rows.Next() {
+		var id int
+		var action, target, detail string
+		if err := rows.Scan(&id, &action, &target, &detail); err != nil {
+			return err
+		}
+		m := parseLegacyAuditMeta(action, target, detail)
+		if m != nil {
+			updates = append(updates, pending{id: id, meta: m})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, u := range updates {
+		b, err := json.Marshal(u.meta)
+		if err != nil {
+			continue
+		}
+		if _, err := s.db.Exec("UPDATE audit_log SET meta = ? WHERE id = ?", string(b), u.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// parseLegacyAuditMeta reconstructs a structured meta map from the legacy
+// target/detail text strings for a given action. Returns nil when nothing
+// useful can be recovered.
+func parseLegacyAuditMeta(action, target, detail string) map[string]any {
+	switch action {
+	case "planning_set", "planning_clear":
+		// target = "PID DATE SLOT"
+		parts := strings.SplitN(target, " ", 3)
+		if len(parts) < 1 {
+			return nil
+		}
+		m := map[string]any{"person_ids": []string{parts[0]}}
+		if len(parts) >= 2 {
+			m["date"] = parts[1]
+		}
+		if len(parts) >= 3 {
+			m["slot"] = parts[2]
+		}
+		if detail != "" {
+			applyDetailMeta(m, detail)
+		}
+		return m
+	case "planning_range", "planning_range_clear":
+		// target = "STARTDATE-STARTSLOT ENDDATE-ENDSLOT"
+		m := map[string]any{}
+		rngParts := strings.SplitN(target, " ", 2)
+		if len(rngParts) == 2 {
+			s := strings.SplitN(rngParts[0], "-", 2)
+			e := strings.SplitN(rngParts[1], "-", 2)
+			if len(s) >= 1 {
+				m["start_date"] = s[0]
+			}
+			if len(s) == 2 {
+				m["start_slot"] = s[1]
+			}
+			if len(e) >= 1 {
+				m["end_date"] = e[0]
+			}
+			if len(e) == 2 {
+				m["end_slot"] = e[1]
+			}
+		}
+		if n := extractFirstInt(detail); n >= 0 {
+			m["people_count"] = n
+		}
+		return m
+	case "planning_copy":
+		// target = "FROM -> TO", detail = "person PID"
+		m := map[string]any{}
+		if pid := strings.TrimSpace(strings.TrimPrefix(detail, "person")); pid != "" {
+			m["person_ids"] = []string{pid}
+		}
+		rngParts := strings.SplitN(target, " -> ", 2)
+		if len(rngParts) == 2 {
+			m["from_week"] = rngParts[0]
+			m["to_week"] = rngParts[1]
+		}
+		return m
+	case "oncall_set", "oncall_remove":
+		// target = "PID WEEKSTART"
+		parts := strings.SplitN(target, " ", 2)
+		if len(parts) < 1 {
+			return nil
+		}
+		m := map[string]any{"person_ids": []string{parts[0]}}
+		if len(parts) == 2 {
+			m["week_start"] = parts[1]
+		}
+		return m
+	case "person_delete", "person_archive", "person_unarchive":
+		if target == "" {
+			return nil
+		}
+		return map[string]any{"person_ids": []string{target}}
+	case "person_add", "person_update":
+		if target == "" {
+			return nil
+		}
+		return map[string]any{"person_name": target}
+	case "project_add", "project_update":
+		if target == "" {
+			return nil
+		}
+		return map[string]any{"project_name": target}
+	case "project_delete":
+		if target == "" {
+			return nil
+		}
+		return map[string]any{"project_id": target}
+	case "prune":
+		m := map[string]any{}
+		if n := extractFirstInt(target); n >= 0 {
+			m["weeks_old"] = n
+		}
+		if n := extractFirstInt(detail); n >= 0 {
+			m["deleted"] = n
+		}
+		return m
+	case "project_import_csv":
+		m := map[string]any{}
+		if c := strings.Index(detail, "created"); c >= 0 {
+			if n := extractFirstInt(detail[c:]); n >= 0 {
+				m["created"] = n
+			}
+		}
+		if u := strings.Index(detail, "updated"); u >= 0 {
+			if n := extractFirstInt(detail[u:]); n >= 0 {
+				m["updated"] = n
+			}
+		}
+		return m
+	}
+	return nil
+}
+
+// applyDetailMeta interprets a planning_set detail string into state fields.
+func applyDetailMeta(m map[string]any, detail string) {
+	switch {
+	case strings.HasPrefix(detail, "away:"):
+		m["state"] = "away"
+		m["away_type"] = strings.TrimPrefix(detail, "away:")
+	case strings.HasPrefix(detail, "incident:"):
+		m["state"] = "incident"
+		m["incident_text"] = strings.TrimPrefix(detail, "incident:")
+	case detail == "run":
+		m["state"] = "run"
+	case strings.Contains(detail, "+run"):
+		m["state"] = "project"
+		m["projects"] = strings.Split(strings.TrimSuffix(detail, "+run"), ",")
+		m["run"] = true
+	case detail != "":
+		m["state"] = "project"
+		m["projects"] = strings.Split(detail, ",")
+	}
+}
+
+// extractFirstInt returns the first run of decimal digits found anywhere in
+// the string as a non-negative integer, or -1 if none is found.
+func extractFirstInt(s string) int {
+	start := -1
+	for i := 0; i < len(s); i++ {
+		if s[i] >= '0' && s[i] <= '9' {
+			if start < 0 {
+				start = i
+			}
+		} else if start >= 0 {
+			n, _ := strconv.Atoi(s[start:i])
+			return n
+		}
+	}
+	if start >= 0 {
+		n, _ := strconv.Atoi(s[start:])
+		return n
+	}
+	return -1
 }
 
 // ===== Settings =====
@@ -195,48 +454,6 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
-}
-
-// ===== Activity / Audit Log =====
-
-type ActivityEvent struct {
-	Id     int    `json:"id"`
-	Ts     string `json:"ts"`
-	Actor  string `json:"actor"`
-	Action string `json:"action"`
-	Target string `json:"target"`
-	Detail string `json:"detail"`
-}
-
-func (s *Store) RecordEvent(actor, action, target, detail string) error {
-	now := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.db.Exec("INSERT INTO audit_log (ts, actor, action, target, detail) VALUES (?, ?, ?, ?, ?)",
-		now, actor, action, target, detail)
-	return err
-}
-
-func (s *Store) ListEvents(limit int) ([]ActivityEvent, error) {
-	if limit < 1 {
-		limit = 50
-	}
-	if limit > 200 {
-		limit = 200
-	}
-	rows, err := s.db.Query("SELECT id, ts, actor, action, target, detail FROM audit_log ORDER BY id DESC LIMIT ?", limit)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var events []ActivityEvent
-	for rows.Next() {
-		var e ActivityEvent
-		if err := rows.Scan(&e.Id, &e.Ts, &e.Actor, &e.Action, &e.Target, &e.Detail); err != nil {
-			return nil, err
-		}
-		events = append(events, e)
-	}
-	return events, nil
 }
 
 // ===== User-Person Mapping =====

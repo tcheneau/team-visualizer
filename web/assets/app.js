@@ -403,6 +403,8 @@ let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeP
 let editorPersonId = null, editorDate = null, editorSlot = null;
 let _showWeekend = false;
 let teamFilter = '';
+// Activity tab filters (persist across re-renders while the tab is open)
+let activityFilter = { type: 'all', person: 'all', actor: 'all', search: '' };
 
 // Persistent view prefs (localStorage)
 const PREFS_KEYS = ['scrollOffset','teamGroupBy','_showWeekend','teamShowGuests','currentView','availabilityDayOffset','teamFilter'];
@@ -1012,6 +1014,33 @@ function renderWorkload(container) {
 }
 
 // ===== ACTIVITY VIEW (all roles) =====
+
+// Map of action → human-friendly label and category for filtering.
+const ACT_LABELS = {
+  planning_set:        { label: 'Set slot',          cat: 'planning' },
+  planning_clear:      { label: 'Clear slot',        cat: 'planning' },
+  planning_range:      { label: 'Set range',         cat: 'planning' },
+  planning_range_clear:{ label: 'Clear range',       cat: 'planning' },
+  planning_copy:       { label: 'Copy week',         cat: 'planning' },
+  oncall_set:          { label: 'On-call set',       cat: 'oncall' },
+  oncall_remove:       { label: 'On-call removed',   cat: 'oncall' },
+  project_add:         { label: 'Project added',    cat: 'projects' },
+  project_update:      { label: 'Project updated',  cat: 'projects' },
+  project_delete:      { label: 'Project deleted',  cat: 'projects' },
+  project_import_csv:  { label: 'Projects imported', cat: 'projects' },
+  person_add:          { label: 'Person added',      cat: 'people' },
+  person_update:       { label: 'Person updated',   cat: 'people' },
+  person_delete:       { label: 'Person deleted',    cat: 'people' },
+  person_archive:      { label: 'Person archived',  cat: 'people' },
+  person_unarchive:    { label: 'Person restored',  cat: 'people' },
+  prune:               { label: 'Pruned old data',  cat: 'system' },
+  reset:               { label: 'Reset all data',   cat: 'system' },
+  settings_update:     { label: 'Settings updated',  cat: 'system' },
+};
+const ACT_CAT_LABELS = {
+  all: 'All actions', planning: 'Planning', oncall: 'On-call', projects: 'Projects', people: 'People', system: 'System',
+};
+
 function renderActivity(container) {
   if (!Array.isArray(State.activity)) State.activity = [];
   // Show cached data immediately (instant tab switch), then always fetch fresh.
@@ -1019,22 +1048,221 @@ function renderActivity(container) {
   else container.innerHTML = '<h2>Activity</h2><p style="color:var(--fg-muted)">Loading…</p>';
   API.get('/activity?limit=50').then(d => { State.activity = d || []; renderActivityList(container); });
 }
+
 function renderActivityList(container) {
-  let html = '<h2>Activity</h2><div style="margin-bottom:8px"><button onclick="API.get(\'/activity?limit=50\').then(d=>{State.activity=d||[];render()})">🔄 Refresh</button></div>';
-  html += '<div style="display:flex;flex-direction:column;gap:4px;max-height:70vh;overflow-y:auto">';
-  if (State.activity.length === 0) html += '<p style="color:var(--fg-muted)">No activity yet.</p>';
-  State.activity.forEach(e => {
-    const ts = e.ts ? new Date(e.ts).toLocaleString() : '';
-    html += `<div style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem">
-      <span style="color:var(--fg-muted);font-size:.7rem">${esc(ts)}</span>
-      <span class="pv-badge" style="font-size:.7rem;padding:1px 6px;border-radius:3px;background:var(--accent);color:#fff;margin:0 4px">${esc(e.actor||'')}</span>
-      <strong>${esc(e.action||'')}</strong>
-      ${e.target ? `<code style="font-size:.7rem;color:var(--fg-muted)">${esc(e.target)}</code>` : ''}
-      ${e.detail ? `<span style="color:var(--fg-muted);font-size:.75rem">— ${esc(e.detail)}</span>` : ''}
-    </div>`;
+  const events = State.activity || [];
+  // Build unique actor list from the events for the actor filter.
+  const actors = {};
+  events.forEach(e => { if (e.actor) actors[e.actor] = true; });
+
+  // Apply filters.
+  const q = activityFilter.search.trim().toLowerCase();
+  const filtered = events.filter(e => {
+    if (activityFilter.type !== 'all') {
+      const info = ACT_LABELS[e.action];
+      if (!info || info.cat !== activityFilter.type) return false;
+    }
+    if (activityFilter.actor !== 'all' && e.actor !== activityFilter.actor) return false;
+    if (activityFilter.person !== 'all') {
+      const meta = e.meta || {};
+      const ids = meta.person_ids || (meta.person_id ? [meta.person_id] : []);
+      if (!ids.includes(activityFilter.person)) return false;
+    }
+    if (q) {
+      const meta = e.meta || {};
+      const info = ACT_LABELS[e.action];
+      const hay = [
+        e.action, info ? info.label : '', e.target, e.detail, e.actor,
+        meta.person_name, meta.project_name, meta.away_type, meta.incident_text,
+        Array.isArray(meta.projects) ? meta.projects.join(' ') : '',
+        (meta.person_ids || []).map(id => { const p = getPerson(id); return p ? p.name : id; }).join(' '),
+      ].join(' ').toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
   });
+
+  let html = '<h2>Activity</h2>';
+  // Toolbar: refresh + filters + search
+  html += '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">';
+  html += `<button onclick="API.get('/activity?limit=50').then(d=>{State.activity=d||[];render()})">🔄 Refresh</button>`;
+  html += `<select id="act-filter-type" onchange="activityFilter.type=this.value;renderActivityList(document.getElementById('main').querySelector('.act-list-wrap')||document.getElementById('main'));" style="width:auto">`;
+  Object.keys(ACT_CAT_LABELS).forEach(c => {
+    html += `<option value="${c}" ${activityFilter.type===c?'selected':''}>${ACT_CAT_LABELS[c]}</option>`;
+  });
+  html += '</select>';
+  // Person filter
+  html += `<select id="act-filter-person" onchange="activityFilter.person=this.value;renderActivityList(document.getElementById('main').querySelector('.act-list-wrap')||document.getElementById('main'));" style="width:auto">`;
+  html += `<option value="all" ${activityFilter.person==='all'?'selected':''}>All team members</option>`;
+  State.people.forEach(p => html += `<option value="${p.id}" ${activityFilter.person===p.id?'selected':''}>${esc(p.avatar_emoji||'👤')} ${esc(p.name)}</option>`);
+  html += '</select>';
+  // Actor filter
+  html += `<select id="act-filter-actor" onchange="activityFilter.actor=this.value;renderActivityList(document.getElementById('main').querySelector('.act-list-wrap')||document.getElementById('main'));" style="width:auto">`;
+  html += `<option value="all" ${activityFilter.actor==='all'?'selected':''}>All users</option>`;
+  Object.keys(actors).forEach(a => html += `<option value="${esc(a)}" ${activityFilter.actor===a?'selected':''}>${esc(a)}</option>`);
+  html += '</select>';
+  // Search box
+  html += `<input id="act-filter-search" type="search" placeholder="Search…" value="${esc(activityFilter.search)}" oninput="activityFilter.search=this.value;actSearchDebounce()" style="width:160px">`;
+  const active = (activityFilter.type!=='all')||(activityFilter.person!=='all')||(activityFilter.actor!=='all')||(q!=='');
+  if (active) html += `<button onclick="activityFilter={type:'all',person:'all',actor:'all',search:''};render()" title="Clear filters">✕ Clear</button>`;
+  html += `<span style="color:var(--fg-muted);font-size:.8rem;margin-left:auto">${filtered.length} of ${events.length} event${events.length===1?'':'s'}</span>`;
+  html += '</div>';
+
+  html += '<div class="act-list-wrap" style="display:flex;flex-direction:column;gap:4px;max-height:72vh;overflow-y:auto">';
+  if (filtered.length === 0) {
+    html += '<p style="color:var(--fg-muted)">No activity matching the filters.</p>';
+  } else {
+    // Group by day (based on event timestamp).
+    let lastDay = '';
+    filtered.forEach(e => {
+      const day = (e.ts || '').slice(0, 10);
+      if (day !== lastDay) {
+        lastDay = day;
+        html += `<div class="act-day-head" style="margin:10px 0 4px;font-size:.75rem;color:var(--fg-muted);font-weight:600;border-bottom:1px solid var(--border);padding-bottom:2px">${actDayLabel(day)}</div>`;
+      }
+      html += actRow(e);
+    });
+  }
   html += '</div>';
   container.innerHTML = html;
+}
+
+// Debounce search re-render so typing doesn't thrash.
+let _actSearchTimer = null;
+function actSearchDebounce() {
+  clearTimeout(_actSearchTimer);
+  _actSearchTimer = setTimeout(() => {
+    const main = document.getElementById('main');
+    if (currentView === 'activity') renderActivityList(main);
+  }, 200);
+}
+
+function actDayLabel(dayStr) {
+  if (!dayStr) return 'Unknown date';
+  const d = new Date(dayStr + 'T00:00:00');
+  if (isNaN(d)) return dayStr;
+  const today = new Date(); today.setHours(0,0,0,0);
+  const diff = Math.round((today - d) / 86400000);
+  const nice = d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' });
+  if (diff === 0) return 'Today · ' + nice;
+  if (diff === 1) return 'Yesterday · ' + nice;
+  return nice;
+}
+
+function actRow(e) {
+  const info = ACT_LABELS[e.action] || { label: e.action, cat: 'other' };
+  const meta = e.meta || {};
+  const ts = e.ts ? new Date(e.ts).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' }) : '';
+  let html = `<div class="act-row" style="background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:.8rem;display:flex;gap:8px;align-items:flex-start;flex-wrap:wrap">`;
+  // Time + actor
+  html += `<span style="color:var(--fg-muted);font-size:.7rem;min-width:48px;white-space:nowrap">${esc(ts)}</span>`;
+  html += `<span class="pv-badge" style="font-size:.7rem;padding:1px 6px;border-radius:3px;background:var(--accent);color:#fff" title="${esc(e.actor||'')}">${esc(e.actor||'system')}</span>`;
+  // Action label
+  html += `<strong style="min-width:110px">${esc(info.label)}</strong>`;
+  // Targeted team members (the key improvement)
+  html += actPersonChips(meta);
+  // Friendly date / slot / range
+  html += actDateLabel(meta);
+  // State badge (away / incident / project / run / cleared)
+  html += actStateBadge(meta);
+  // Extra detail (project names, away note, counts)
+  html += actExtra(meta, e);
+  html += '</div>';
+  return html;
+}
+
+function actPersonChips(meta) {
+  const ids = meta.person_ids || (meta.person_id ? [meta.person_id] : []);
+  if (!ids.length) {
+    if (meta.person_name) return `<span style="color:var(--fg)" title="person">👤 ${esc(meta.person_name)}</span>`;
+    return '';
+  }
+  let out = '<span style="display:flex;gap:3px;flex-wrap:wrap;align-items:center">';
+  ids.forEach(id => {
+    const p = getPerson(id);
+    if (p) {
+      out += `<span style="background:${(p.avatar_color||'#888')}20;color:${p.avatar_color||'#888'};border-radius:10px;padding:1px 8px;font-size:.72rem;white-space:nowrap" title="${esc(p.role||'')}${p.sub_team?' · '+esc(p.sub_team):''}">${esc(p.avatar_emoji||'👤')} ${esc(p.name)}</span>`;
+    } else {
+      out += `<span style="color:var(--fg-muted);font-size:.72rem;font-family:var(--font-mono);white-space:nowrap" title="unknown / archived person">${esc(id)}</span>`;
+    }
+  });
+  out += '</span>';
+  return out;
+}
+
+function actDateLabel(meta) {
+  // Single-slot action: date + slot
+  if (meta.date) {
+    const d = parseDate(meta.date);
+    const day = d ? d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) : meta.date;
+    const slot = meta.slot ? (meta.slot === 'am' ? 'AM' : 'PM') : '';
+    return `<span style="color:var(--fg-muted);font-size:.75rem;white-space:nowrap">📅 ${esc(day)}${slot?' · '+esc(slot):''}</span>`;
+  }
+  // Week-based action: on-call / copy
+  if (meta.week_start) {
+    const d = parseDate(meta.week_start);
+    const day = d ? d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) : meta.week_start;
+    return `<span style="color:var(--fg-muted);font-size:.75rem;white-space:nowrap">📅 Week of ${esc(day)}</span>`;
+  }
+  if (meta.from_week || meta.to_week) {
+    const f = meta.from_week ? actShortDate(meta.from_week) : '?';
+    const t = meta.to_week ? actShortDate(meta.to_week) : '?';
+    return `<span style="color:var(--fg-muted);font-size:.75rem;white-space:nowrap">📅 ${esc(f)} → ${esc(t)}</span>`;
+  }
+  // Range action: start_date/slot → end_date/slot
+  if (meta.start_date || meta.end_date) {
+    const s = actShortDate(meta.start_date) + (meta.start_slot ? ' ' + (meta.start_slot === 'am' ? 'AM' : 'PM') : '');
+    const en = actShortDate(meta.end_date) + (meta.end_slot ? ' ' + (meta.end_slot === 'am' ? 'AM' : 'PM') : '');
+    return `<span style="color:var(--fg-muted);font-size:.75rem;white-space:nowrap">📅 ${esc(s)} → ${esc(en)}</span>`;
+  }
+  return '';
+}
+
+function actShortDate(s) {
+  if (!s) return '?';
+  const d = parseDate(s);
+  return d ? d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric', month: 'short' }) : s;
+}
+
+function actStateBadge(meta) {
+  const st = meta.state;
+  if (!st || st === 'cleared') return '';
+  const styles = {
+    away:      'background:var(--slot-away);color:#fff',
+    incident:  'background:var(--slot-incident);color:var(--slot-incident-line);border:1px solid var(--slot-incident-line)',
+    project:   'background:var(--slot-project);color:#fff',
+    run:       'background:var(--slot-run);color:#fff',
+    undetermined: 'background:var(--slot-undetermined);color:var(--fg)',
+  };
+  const s = styles[st] || '';
+  if (!s) return '';
+  let label = st.charAt(0).toUpperCase() + st.slice(1);
+  if (st === 'away' && meta.away_type) label += ': ' + meta.away_type;
+  return `<span style="${s};font-size:.7rem;padding:1px 6px;border-radius:3px;white-space:nowrap">${esc(label)}</span>`;
+}
+
+function actExtra(meta, e) {
+  let bits = [];
+  if (meta.remote) bits.push('🌐 remote');
+  if (meta.offsite) bits.push('🏢 offsite');
+  if (meta.run && meta.state === 'project') bits.push('🏃 +run');
+  if (Array.isArray(meta.projects) && meta.projects.length) bits.push('📁 ' + meta.projects.join(', '));
+  if (meta.away_note) bits.push('📝 ' + meta.away_note);
+  if (meta.incident_text) bits.push('⚠ ' + meta.incident_text);
+  if (meta.project_name) bits.push('📁 ' + meta.project_name);
+  if (meta.weeks_old !== undefined) bits.push('older than ' + meta.weeks_old + ' weeks');
+  if (meta.deleted !== undefined) bits.push('deleted ' + meta.deleted + ' slots');
+  if (meta.created !== undefined) bits.push('created ' + meta.created);
+  if (meta.updated !== undefined) bits.push('updated ' + meta.updated);
+  if (meta.people_count !== undefined && !(meta.person_ids && meta.person_ids.length)) bits.push(meta.people_count + ' people');
+  if (meta.keys && meta.keys.length) bits.push('keys: ' + meta.keys.join(', '));
+  // Fallback to legacy text fields if nothing structured was recorded.
+  if (!bits.length && (e.detail || e.target)) {
+    const t = [e.target, e.detail].filter(Boolean).join(' — ');
+    if (t) bits.push(esc(t));
+  }
+  if (!bits.length) return '';
+  return `<span style="color:var(--fg-muted);font-size:.75rem;flex:1;min-width:120px">${bits.join(' · ')}</span>`;
 }
 
 // ===== INCIDENTS VIEW (all roles) =====

@@ -32,7 +32,7 @@ func (r *Router) addPerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_added", result)
-	r.recordEvent(req.Context(), "person_add", result.Name, "")
+	r.recordEvent(req.Context(), "person_add", result.Name, "", map[string]any{"person_id": result.ID, "person_name": result.Name})
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -53,7 +53,7 @@ func (r *Router) updatePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_updated", persisted)
-	r.recordEvent(req.Context(), "person_update", persisted.Name, "")
+	r.recordEvent(req.Context(), "person_update", persisted.Name, "", map[string]any{"person_id": persisted.ID, "person_name": persisted.Name})
 	writeJSON(w, http.StatusOK, persisted)
 }
 
@@ -64,7 +64,7 @@ func (r *Router) deletePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_deleted", map[string]string{"id": id})
-	r.recordEvent(req.Context(), "person_delete", id, "")
+	r.recordEvent(req.Context(), "person_delete", id, "", map[string]any{"person_ids": []string{id}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -75,7 +75,7 @@ func (r *Router) archivePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_archived", map[string]string{"id": id})
-	r.recordEvent(req.Context(), "person_archive", id, "")
+	r.recordEvent(req.Context(), "person_archive", id, "", map[string]any{"person_ids": []string{id}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "archived"})
 }
 
@@ -86,7 +86,7 @@ func (r *Router) unarchivePerson(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("person_unarchived", map[string]string{"id": id})
-	r.recordEvent(req.Context(), "person_unarchive", id, "")
+	r.recordEvent(req.Context(), "person_unarchive", id, "", map[string]any{"person_ids": []string{id}})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "active"})
 }
 
@@ -131,7 +131,7 @@ func (r *Router) setSlot(w http.ResponseWriter, req *http.Request) {
 	} else if body.Data.Run {
 		detail = "run"
 	}
-	r.recordEvent(req.Context(), "planning_set", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), detail)
+	r.recordEvent(req.Context(), "planning_set", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), detail, slotMeta(body.PersonID, body.Data, map[string]any{"date": body.Date, "slot": body.Slot}))
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -146,7 +146,7 @@ func (r *Router) clearSlot(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_cleared", body)
-	r.recordEvent(req.Context(), "planning_clear", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), "")
+	r.recordEvent(req.Context(), "planning_clear", fmt.Sprintf("%s %s %s", body.PersonID, body.Date, body.Slot), "", map[string]any{"person_ids": []string{body.PersonID}, "date": body.Date, "slot": body.Slot, "state": "cleared"})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "cleared"})
 }
 
@@ -192,7 +192,12 @@ func (r *Router) setSlotRange(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_range", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate, "data": body.Data})
-	r.recordEvent(req.Context(), "planning_range", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)))
+	meta := slotRangeMeta(body.PersonIDs, body.Data)
+	meta["start_date"] = body.StartDate
+	meta["start_slot"] = body.StartSlot
+	meta["end_date"] = body.EndDate
+	meta["end_slot"] = body.EndSlot
+	r.recordEvent(req.Context(), "planning_range", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)), meta)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":    "ok",
 		"slots_set": len(refs),
@@ -218,7 +223,13 @@ func (r *Router) clearSlotRange(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_range_cleared", map[string]any{"person_ids": body.PersonIDs, "start_date": body.StartDate, "end_date": body.EndDate})
-	r.recordEvent(req.Context(), "planning_range_clear", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)))
+	meta := slotRangeMeta(body.PersonIDs, model.SlotData{})
+	meta["start_date"] = body.StartDate
+	meta["start_slot"] = body.StartSlot
+	meta["end_date"] = body.EndDate
+	meta["end_slot"] = body.EndSlot
+	meta["state"] = "cleared"
+	r.recordEvent(req.Context(), "planning_range_clear", fmt.Sprintf("%s-%s %s-%s", body.StartDate, body.StartSlot, body.EndDate, body.EndSlot), fmt.Sprintf("%d people", len(body.PersonIDs)), meta)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "slots_cleared": len(refs)})
 }
 
@@ -240,7 +251,7 @@ func (r *Router) copyWeek(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_copied", map[string]any{"person_id": body.PersonID, "to_week_start": body.ToWeekStart})
-	r.recordEvent(req.Context(), "planning_copy", fmt.Sprintf("%s -> %s", body.FromWeekStart, body.ToWeekStart), fmt.Sprintf("person %s", body.PersonID))
+	r.recordEvent(req.Context(), "planning_copy", fmt.Sprintf("%s -> %s", body.FromWeekStart, body.ToWeekStart), fmt.Sprintf("person %s", body.PersonID), map[string]any{"person_ids": []string{body.PersonID}, "from_week": body.FromWeekStart, "to_week": body.ToWeekStart})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "copied": copied})
 }
 
@@ -271,7 +282,7 @@ func (r *Router) pruneData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("planning_pruned", map[string]any{"weeks_old": body.WeeksOld, "deleted": deleted})
-	r.recordEvent(req.Context(), "prune", fmt.Sprintf("weeks_old %d", body.WeeksOld), fmt.Sprintf("deleted %d", deleted))
+	r.recordEvent(req.Context(), "prune", fmt.Sprintf("weeks_old %d", body.WeeksOld), fmt.Sprintf("deleted %d", deleted), map[string]any{"weeks_old": body.WeeksOld, "deleted": deleted})
 	writeJSON(w, http.StatusOK, map[string]any{"status": "ok", "deleted": deleted, "weeks_old": body.WeeksOld})
 }
 
@@ -281,7 +292,7 @@ func (r *Router) resetData(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("data_reset", nil)
-	r.recordEvent(req.Context(), "reset", "", "")
+	r.recordEvent(req.Context(), "reset", "", "", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "reset"})
 }
 
@@ -308,7 +319,7 @@ func (r *Router) addProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_added", result)
-	r.recordEvent(req.Context(), "project_add", result.Name, "")
+	r.recordEvent(req.Context(), "project_add", result.Name, "", map[string]any{"project_id": result.ID, "project_name": result.Name})
 	writeJSON(w, http.StatusCreated, result)
 }
 
@@ -329,7 +340,7 @@ func (r *Router) updateProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_updated", persisted)
-	r.recordEvent(req.Context(), "project_update", persisted.Name, "")
+	r.recordEvent(req.Context(), "project_update", persisted.Name, "", map[string]any{"project_id": persisted.ID, "project_name": persisted.Name})
 	writeJSON(w, http.StatusOK, persisted)
 }
 
@@ -340,7 +351,7 @@ func (r *Router) deleteProject(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("project_deleted", map[string]string{"id": id})
-	r.recordEvent(req.Context(), "project_delete", id, "")
+	r.recordEvent(req.Context(), "project_delete", id, "", map[string]any{"project_id": id})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -390,8 +401,7 @@ func (r *Router) importProjectCSV(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 	r.hub.Broadcast("projects_imported", map[string]any{"created": created, "updated": updated})
-	r.hub.Broadcast("projects_imported", map[string]any{"created": created, "updated": updated})
-	r.recordEvent(req.Context(), "project_import_csv", "", fmt.Sprintf("created %d updated %d", created, updated))
+	r.recordEvent(req.Context(), "project_import_csv", "", fmt.Sprintf("created %d updated %d", created, updated), map[string]any{"created": created, "updated": updated})
 	writeJSON(w, http.StatusOK, map[string]any{"created": created, "updated": updated})
 }
 
@@ -413,7 +423,7 @@ func (r *Router) setOnCall(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("oncall_changed", body)
-	r.recordEvent(req.Context(), "oncall_set", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "")
+	r.recordEvent(req.Context(), "oncall_set", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "", map[string]any{"person_ids": []string{body.PersonID}, "week_start": body.WeekStart})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -428,7 +438,7 @@ func (r *Router) removeOnCall(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	r.hub.Broadcast("oncall_changed", body)
-	r.recordEvent(req.Context(), "oncall_remove", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "")
+	r.recordEvent(req.Context(), "oncall_remove", fmt.Sprintf("%s %s", body.PersonID, body.WeekStart), "", map[string]any{"person_ids": []string{body.PersonID}, "week_start": body.WeekStart})
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -532,6 +542,65 @@ func (r *Router) importHolidays(w http.ResponseWriter, req *http.Request) {
 }
 
 // ===== Helpers =====
+
+// slotMeta builds the structured meta map for a single-slot action (e.g.
+// planning_set) given the person id and the slot data. Extra key/values can be
+// merged in (date/slot).
+func slotMeta(personID string, d model.SlotData, extra map[string]any) map[string]any {
+	m := map[string]any{"person_ids": []string{personID}}
+	for k, v := range extra {
+		m[k] = v
+	}
+	applySlotDataMeta(m, d)
+	return m
+}
+
+// slotRangeMeta builds the structured meta map for a range action affecting
+// one or more people.
+func slotRangeMeta(personIDs []string, d model.SlotData) map[string]any {
+	ids := make([]string, len(personIDs))
+	copy(ids, personIDs)
+	m := map[string]any{"person_ids": ids, "people_count": len(personIDs)}
+	applySlotDataMeta(m, d)
+	return m
+}
+
+// applySlotDataMeta adds state/project/run/remote/offsite info from a SlotData
+// into a meta map.
+func applySlotDataMeta(m map[string]any, d model.SlotData) {
+	if d.Away != nil {
+		m["state"] = "away"
+		m["away_type"] = d.Away.Type
+		if d.Away.Note != "" {
+			m["away_note"] = d.Away.Note
+		}
+	} else if d.Incident != nil {
+		m["state"] = "incident"
+		if d.Incident.Text != "" {
+			m["incident_text"] = d.Incident.Text
+		}
+	} else if len(d.Projects) > 0 {
+		m["state"] = "project"
+		names := make([]string, 0, len(d.Projects))
+		for _, p := range d.Projects {
+			names = append(names, p.Name)
+		}
+		m["projects"] = names
+		if d.Run {
+			m["run"] = true
+		}
+	} else if d.Run {
+		m["state"] = "run"
+	} else {
+		m["state"] = d.State
+	}
+	if d.Remote {
+		m["remote"] = true
+	}
+	if d.Offsite {
+		m["offsite"] = true
+	}
+}
 
 // slotInDateRange represents a {date, slot} pair.
 type slotInDateRange struct {
