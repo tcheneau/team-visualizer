@@ -39,6 +39,7 @@ type SlotData struct {
 	Incident *IncidentData   `json:"incident"`
 	Projects []ProjectAssign `json:"projects"`
 	Run      bool            `json:"run"`
+	RunNote  string          `json:"run_note"`
 	Remote   bool            `json:"remote"`
 	Offsite  bool            `json:"offsite"`
 }

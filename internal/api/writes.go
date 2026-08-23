@@ -594,6 +594,9 @@ func applySlotDataMeta(m map[string]any, d model.SlotData) {
 	} else {
 		m["state"] = d.State
 	}
+	if d.RunNote != "" {
+		m["run_note"] = d.RunNote
+	}
 	if d.Remote {
 		m["remote"] = true
 	}

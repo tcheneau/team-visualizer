@@ -59,7 +59,7 @@ func scanPerson(r interface{ Scan(...any) error }) (model.Person, error) {
 
 func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note
 		FROM planning
 		WHERE date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY person_id, date, slot`, startDate, endDate)
@@ -71,9 +71,9 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 	var entries []model.PlanningEntry
 	for rows.Next() {
 		var e model.PlanningEntry
-		var awayType, awayNote, projectsJSON, incidentText string
+		var awayType, awayNote, projectsJSON, incidentText, runNote string
 		var run, remote, offsite, isIncident int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote)
 		if err != nil {
 			return nil, err
 		}
@@ -84,6 +84,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
 		}
 		e.Data.Run = run != 0
+		e.Data.RunNote = runNote
 		e.Data.Remote = remote != 0
 		e.Data.Offsite = offsite != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
@@ -99,7 +100,7 @@ func (s *Store) GetPlanning(startDate, endDate string) ([]model.PlanningEntry, e
 // GetPlanningForPerson returns all planning entries for a specific person in a date range.
 func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]model.PlanningEntry, error) {
 	rows, err := s.db.Query(`
-		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident
+		SELECT person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note
 		FROM planning
 		WHERE person_id = ? AND date >= ? AND date <= ? AND state != 'not_filled'
 		ORDER BY date, slot`, personID, startDate, endDate)
@@ -111,9 +112,9 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 	var entries []model.PlanningEntry
 	for rows.Next() {
 		var e model.PlanningEntry
-		var awayType, awayNote, projectsJSON, incidentText string
+		var awayType, awayNote, projectsJSON, incidentText, runNote string
 		var run, remote, offsite, isIncident int
-		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
+		err := rows.Scan(&e.PersonID, &e.Date, &e.Slot, &e.Data.State, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote)
 		if err != nil {
 			return nil, err
 		}
@@ -124,6 +125,7 @@ func (s *Store) GetPlanningForPerson(personID, startDate, endDate string) ([]mod
 			e.Data.Incident = &model.IncidentData{Text: incidentText}
 		}
 		e.Data.Run = run != 0
+		e.Data.RunNote = runNote
 		e.Data.Remote = remote != 0
 		e.Data.Offsite = offsite != 0
 		if projectsJSON != "" && projectsJSON != "[]" {
@@ -307,6 +309,7 @@ type ExportPlanning struct {
 	Offsite      bool                  `toml:"offsite"`
 	Incident     bool                  `toml:"incident"`
 	IncidentText string                `toml:"incident_text"`
+	RunNote      string                `toml:"run_note"`
 	Projects     []model.ProjectAssign `toml:"projects"`
 }
 
@@ -368,7 +371,7 @@ func (s *Store) GetExportData() (*ExportData, error) {
 			PersonID: e.PersonID, Date: e.Date, Slot: e.Slot,
 			State: e.Data.State, AwayType: awayType, AwayNote: awayNote,
 			Run: e.Data.Run, Remote: e.Data.Remote, Offsite: e.Data.Offsite,
-			IncidentText: incidentText, Incident: e.Data.Incident != nil, Projects: projs,
+			IncidentText: incidentText, Incident: e.Data.Incident != nil, RunNote: e.Data.RunNote, Projects: projs,
 		})
 	}
 

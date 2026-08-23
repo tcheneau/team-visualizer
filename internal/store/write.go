@@ -97,6 +97,10 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 	if data.Run {
 		runVal = 1
 	}
+	runNote := data.RunNote
+	if len(runNote) > 2000 {
+		runNote = runNote[:2000]
+	}
 	remoteVal := 0
 	if data.Remote {
 		remoteVal = 1
@@ -106,8 +110,8 @@ func (s *Store) SetSlot(personID, date, slot string, data model.SlotData) error 
 		offsiteVal = 1
 	}
 
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident)
+	_, err := s.db.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+		personID, date, slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote)
 	return err
 }
 
@@ -152,6 +156,10 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Run {
 				runVal = 1
 			}
+			runNote := data.RunNote
+			if len(runNote) > 2000 {
+				runNote = runNote[:2000]
+			}
 			remoteVal := 0
 			if data.Remote {
 				remoteVal = 1
@@ -160,8 +168,8 @@ func (s *Store) SetSlotRange(refs []SlotRef, data model.SlotData) error {
 			if data.Offsite {
 				offsiteVal = 1
 			}
-			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident)
+			_, err = tx.Exec(`INSERT OR REPLACE INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+				ref.PersonID, ref.Date, ref.Slot, data.State, awayType, awayNote, runVal, string(projectsJSON), remoteVal, offsiteVal, incidentText, isIncident, runNote)
 		}
 		if err != nil {
 			tx.Rollback()
@@ -212,10 +220,10 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 
 		for _, slot := range []string{"am", "pm"} {
 			// Read source entry
-			var state, awayType, awayNote, projectsJSON, incidentText string
+			var state, awayType, awayNote, projectsJSON, incidentText, runNote string
 			var run, remote, offsite, isIncident int
-			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident FROM planning WHERE person_id=? AND date=? AND slot=?",
-				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident)
+			err := s.db.QueryRow("SELECT state, away_type, away_note, run, projects, remote, offsite, incident_text, is_incident, run_note FROM planning WHERE person_id=? AND date=? AND slot=?",
+				personID, fromDateStr, slot).Scan(&state, &awayType, &awayNote, &run, &projectsJSON, &remote, &offsite, &incidentText, &isIncident, &runNote)
 			if err == sql.ErrNoRows {
 				continue
 			}
@@ -237,8 +245,8 @@ func (s *Store) CopyWeek(personID, fromWeekStart, toWeekStart string) (int, erro
 				continue // don't overwrite
 			}
 			// Insert at target
-			_, err = s.db.Exec("INSERT INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite) VALUES (?,?,?,?,?,?,?,?,?,?)",
-				personID, toDateStr, slot, state, "", "", run, projectsJSON, remote, offsite)
+			_, err = s.db.Exec("INSERT INTO planning (person_id, date, slot, state, away_type, away_note, run, projects, remote, offsite, run_note) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+				personID, toDateStr, slot, state, "", "", run, projectsJSON, remote, offsite, runNote)
 			if err != nil {
 				return copied, err
 			}
@@ -504,7 +512,7 @@ func (s *Store) ImportTOMLData(data *ExportData, mode string) (created, updated 
 			projs = []model.ProjectAssign{}
 		}
 		if e := s.SetSlot(ep.PersonID, ep.Date, ep.Slot, model.SlotData{
-			State: ep.State, Away: away, Incident: incident, Projects: projs, Run: ep.Run, Remote: ep.Remote, Offsite: ep.Offsite,
+			State: ep.State, Away: away, Incident: incident, Projects: projs, Run: ep.Run, RunNote: ep.RunNote, Remote: ep.Remote, Offsite: ep.Offsite,
 		}); e != nil {
 			return created, updated, fmt.Errorf("import planning %s %s %s: %w", ep.PersonID, ep.Date, ep.Slot, e)
 		}

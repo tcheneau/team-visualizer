@@ -283,7 +283,7 @@ function getCellLabel(slotData) {
   if (slotData.incident) return '⚠';
   let parts = [];
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
-  if (slotData.run) parts.push('R');
+  if (slotData.run) parts.push('R' + (slotData.run_note ? '*' : ''));
   return parts.join('/');
 }
 function getMergeKey(slotData, weekIndex) {
@@ -293,9 +293,9 @@ function getMergeKey(slotData, weekIndex) {
   if (slotData.away) return wk + 'away:' + slotData.away.type;
   if (slotData.incident) return wk + 'incident:' + (slotData.incident.text || '');
   if (slotData.projects && slotData.projects.length === 1 && !slotData.run) return wk + 'proj:' + slotData.projects[0].name;
-  if (slotData.projects && slotData.projects.length === 1 && slotData.run) return wk + 'projrun:' + slotData.projects[0].name;
-  if (slotData.run && (!slotData.projects || slotData.projects.length === 0)) return wk + 'run';
-  return wk + 'complex:' + JSON.stringify(slotData.projects) + ':' + (slotData.run ? '1' : '0');
+  if (slotData.projects && slotData.projects.length === 1 && slotData.run) return wk + 'projrun:' + slotData.projects[0].name + ':' + (slotData.run_note || '');
+  if (slotData.run && (!slotData.projects || slotData.projects.length === 0)) return wk + 'run:' + (slotData.run_note || '');
+  return wk + 'complex:' + JSON.stringify(slotData.projects) + ':' + (slotData.run ? '1' : '0') + ':' + (slotData.run_note || '');
 }
 function getSlotTitle(person, dateStr, slot, slotData) {
   const p = typeof person === 'string' ? getPerson(person) : person;
@@ -313,7 +313,7 @@ function getSlotTitle(person, dateStr, slot, slotData) {
     const emoji = proj && proj.emoji ? proj.emoji + ' ' : '';
     lines.push(desc ? `${emoji}${pr.name} (${pr.pct}%): ${desc}` : `${emoji}${pr.name} (${pr.pct}%)`);
   });
-  if (slotData.run) lines.push('Run duty');
+  if (slotData.run) lines.push('Run duty' + (slotData.run_note ? ': ' + slotData.run_note : ''));
   if (slotData.remote) lines.push('Remote');
   else if (slotData.offsite) lines.push('Off-site');
   return lines.join('\n');
@@ -334,7 +334,7 @@ function getSlotTitleHtml(person, dateStr, slot, slotData) {
     const emoji = proj && proj.emoji ? proj.emoji + ' ' : '';
     html += `<div class="tt-line">${emoji}${esc(pr.name)} (${pr.pct}%)${desc ? ': '+esc(desc) : ''}</div>`;
   });
-  if (slotData.run) html += '<div class="tt-line">🏃 Run duty</div>';
+  if (slotData.run) html += `<div class="tt-line">🏃 Run duty${slotData.run_note ? ': ' + esc(slotData.run_note) : ''}</div>`;
   if (slotData.remote) html += '<div class="tt-line">🏠 Remote</div>';
   else if (slotData.offsite) html += '<div class="tt-line">🏢 Off-site</div>';
   return html;
@@ -348,7 +348,7 @@ function getSlotLabel(slotData) {
   let parts = [];
   if (flagIcon) parts.push(flagIcon);
   if (slotData.projects) slotData.projects.forEach(p => parts.push(p.name));
-  if (slotData.run) parts.push('🏃');
+  if (slotData.run) parts.push('🏃' + (slotData.run_note ? ' ' + slotData.run_note : ''));
   return parts.join(' ') || '—';
 }
 
@@ -364,6 +364,14 @@ function isHoliday(dateStr) {
 function isOnCall(personId, weekStart) { return !!(State.oncall[weekStart] || []).includes(personId); }
 function isRunPerson(personId, weekStart) { return !!(State.rotation[weekStart] || []).includes(personId); }
 function getRunPeople(weekStart) { return getActivePeople().filter(p => isRunPerson(p.id, weekStart)); }
+// collectRunNotes compiles every run-note for a person across a week into a
+// single newline-joined string (for the Run Coverage hover tooltip). Returns
+// '' if the person has no run slots with notes that week.
+function collectRunNotes(personId, weekStart) {
+  const days = getWeekDays(parseDate(weekStart)); const bits = [];
+  days.forEach(d => { const ds = fmtDate(d); ['am','pm'].forEach(slot => { const sd = getSlot(personId, ds, slot); if (sd && sd.run && sd.run_note) bits.push(`${ds} ${slot.toUpperCase()}: ${sd.run_note}`); }); });
+  return bits.join('\n');
+}
 async function toggleOnCall(personId, weekStart) {
   if (isOnCall(personId, weekStart)) { await API.del('/oncall', { person_id: personId, week_start: weekStart }); State.oncall[weekStart] = (State.oncall[weekStart]||[]).filter(id => id !== personId); }
   else { await API.put('/oncall', {person_id:personId, week_start:weekStart}); if (!State.oncall[weekStart]) State.oncall[weekStart] = []; State.oncall[weekStart].push(personId); }
@@ -406,7 +414,6 @@ let currentView = 'team', currentPersonId = null;
 let scrollOffset = 0, availabilityDayOffset = 0;
 let teamGroupBy = 'name', projectsViewMode = 'general', projectsSortBy = 'name', projectsHideDone = true, teamShowGuests = false;
 let dragState = null, rangeEditorCells = null, rangeEditorPersonIds = [], rangeProjCount = 1;
-let editorPersonId = null, editorDate = null, editorSlot = null;
 let _showWeekend = false;
 let teamFilter = '';
 // Activity tab filters (persist across re-renders while the tab is open)
@@ -544,10 +551,6 @@ function applyPendingFlash() {
     });
   });
 }
-
-// Queue the cell currently open in the editor for a self-coloured flash,
-// then close the editor. Must run before closeCellEditor() nulls the vars.
-function selfFlashCell() { if (editorPersonId) queueFlash([{pid:editorPersonId, date:editorDate, slot:editorSlot}], 'self'); }
 
 function updateStatusBar() {
   const left = document.getElementById('status-left');
@@ -749,11 +752,12 @@ function renderRunCoverage(container) {
     if (anyBelow) html += `<div class="warning-banner">⚠️ Some slots below target of ${runTarget}</div>`;
     if (mode === 'rotation') {
       const runPeople = getRunPeople(ws);
-      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${runPeople.length > 0 ? runPeople.map(p=>esc(p.name)).join(', ') : 'None'}</div>`;
+      const names = runPeople.map(p => { const notes = collectRunNotes(p.id, ws); return notes ? `<span title="${esc(notes)}">${esc(p.name)}*</span>` : esc(p.name); }).join(', ');
+      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${names || 'None'}</div>`;
       if (canEdit()) html += `<button onclick="showRotationModal('${ws}')">Assign Run Person</button>`;
     } else {
       const people = getActivePeople();
-      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => `${esc(p.avatar_emoji)} ${esc(p.name)} (${calcRunRatio(p.id, ws).run}h)`);
+      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => { const notes = collectRunNotes(p.id, ws); const tip = notes ? ` title="${esc(notes)}"` : ''; return `<span${tip}>${esc(p.avatar_emoji)} ${esc(p.name)} (${calcRunRatio(p.id, ws).run}h)${notes?'*':''}</span>`; });
       if (runPeople.length > 0) html += `<div style="font-size:.75rem;margin-top:4px">On run: ${runPeople.join(', ')}</div>`;
     }
     html += '</div>';
@@ -788,7 +792,7 @@ function renderAvailability(container) {
     const amCls = getSlotClass(amSd), pmCls = getSlotClass(pmSd);
     const amBg = amCls.includes('project') && projectColorBg(amSd) ? ` style="background:${projectColorBg(amSd)}"` : '';
     const pmBg = pmCls.includes('project') && projectColorBg(pmSd) ? ` style="background:${projectColorBg(pmSd)}"` : '';
-    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run` : (rem+pn||'Available'); }
+    function detail(sd) { if (!sd || sd.state==='not_filled') return 'Available'; const rem = sd.remote ? '🏠 ' : sd.offsite ? '🏢 ' : ''; if (sd.state==='undetermined') return rem+'Project (TBD)'; if (sd.away) return `Away: ${sd.away.type.replace(/_/g,' ')}`; if (sd.incident) return `Incident${sd.incident.text?': '+sd.incident.text:''}`; const pn = sd.projects ? sd.projects.map(p=>p.name).join(', ') : ''; return sd.run ? `${rem}${pn} + Run${sd.run_note?': '+sd.run_note:''}` : (rem+pn||'Available'); }
     const amHl = isToday && currentSlot === 'am' ? ';outline:2px solid var(--accent)' : '';
     const pmHl = isToday && currentSlot === 'pm' ? ';outline:2px solid var(--accent)' : '';
     html += `<div class="avail-card"><div class="name">${p.avatar_emoji} ${p.name}</div><div style="font-size:.75rem;color:var(--fg-muted);margin-bottom:4px">${p.role||''}</div><div style="display:flex;gap:6px;margin-top:4px"><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">AM${isToday&&currentSlot==='am'?' ●':''}</div><div class="status ${amCls}" data-person="${p.id}" data-date="${selDate}" data-slot="am"${amBg} style="${amBg?'':amHl}">${escapeHtml(detail(amSd))}</div></div><div style="flex:1;min-width:0"><div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:2px">PM${isToday&&currentSlot==='pm'?' ●':''}</div><div class="status ${pmCls}" data-person="${p.id}" data-date="${selDate}" data-slot="pm"${pmBg} style="${pmBg?'':pmHl}">${escapeHtml(detail(pmSd))}</div></div></div></div>`;
@@ -1323,6 +1327,7 @@ function actExtra(meta, e) {
   if (meta.remote) bits.push('🌐 remote');
   if (meta.offsite) bits.push('🏢 offsite');
   if (meta.run && meta.state === 'project') bits.push('🏃 +run');
+  if (meta.run_note) bits.push('🏃 ' + meta.run_note);
   if (Array.isArray(meta.projects) && meta.projects.length) bits.push('📁 ' + meta.projects.join(', '));
   if (meta.away_note) bits.push('📝 ' + meta.away_note);
   if (meta.incident_text) bits.push('⚠ ' + meta.incident_text);
@@ -1459,7 +1464,7 @@ function renderMyWeek(container) {
         const sd = getSlot(p.id, ds, slot);
         const cls = getSlotClass(sd);
         const label = getSlotLabel(sd);
-        const click = canEdit() ? ` onclick="openCellEditor('${p.id}','${ds}','${slot}')"` : '';
+        const click = canEdit() ? ` onclick="openUnifiedEditor([{personId:'${p.id}',date:'${ds}',slot:'${slot}'}])"` : '';
         html += `<div class="myweek-slot ${cls}" data-person="${p.id}" data-date="${ds}" data-slot="${slot}"${click} style="flex:1;padding:12px;border-radius:6px;text-align:center;font-size:1rem;cursor:${canEdit()?'pointer':'default'}">
           <div style="font-size:.7rem;color:var(--fg-muted);margin-bottom:4px">${slot.toUpperCase()}</div>
           <div>${escapeHtml(label)}</div>
@@ -1496,143 +1501,226 @@ function endDrag(event) {
   const loRow = Math.min(dragState.startRow, dragState.endRow), loCol = Math.min(dragState.startCol, dragState.endCol);
   const hiRow = Math.max(dragState.startRow, dragState.endRow), hiCol = Math.max(dragState.startCol, dragState.endCol);
   clearDragHighlight(); dragState = null;
-  if (!wasDrag) { const td = document.querySelector(`td.half-day[data-row="${loRow}"][data-col="${loCol}"]`); if (td) openCellEditor(td.dataset.person, td.dataset.date, td.dataset.slot); return; }
+  if (!wasDrag) { const td = document.querySelector(`td.half-day[data-row="${loRow}"][data-col="${loCol}"]`); if (td) openUnifiedEditor([{personId:td.dataset.person, date:td.dataset.date, slot:td.dataset.slot}]); return; }
   // Re-gather from the current DOM state
   const cells = [];
   document.querySelectorAll('td.half-day').forEach(td => { const r = parseInt(td.dataset.row), c = parseInt(td.dataset.col); if (!isNaN(r)&&!isNaN(c)&&r>=loRow&&r<=hiRow&&c>=loCol&&c<=hiCol) cells.push({personId:td.dataset.person, date:td.dataset.date, slot:td.dataset.slot}); });
-  if (cells.length > 0) openRangeEditor(cells);
+  if (cells.length > 0) openUnifiedEditor(cells);
 }
 document.addEventListener('mousemove', extendDrag);
 
-// ===== CELL EDITOR =====
-function openCellEditor(personId, date, slot) {
-  editorPersonId = personId; editorDate = date; editorSlot = slot;
-  const slotData = getSlot(personId, date, slot) || { state: 'not_filled', away: null, incident: null, projects: [], run: false, remote: false, offsite: false };
-  const p = getPerson(personId); const name = p ? p.name : personId;
-  const isAway = slotData && slotData.away; const isUndetermined = slotData && slotData.state === 'undetermined'; const isIncident = slotData && slotData.incident;
-  const activeTab = isUndetermined ? 'undetermined' : isAway ? 'away' : isIncident ? 'incident' : 'project';
-  const projects = (slotData && slotData.projects) ? clone(slotData.projects) : [{ name: '', pct: 100 }];
-  const runChecked = slotData && slotData.run;
-  const currentIncidentText = isIncident ? (slotData.incident.text || '') : '';
-  let html = `<div style="font-weight:600;margin-bottom:8px">${name} · ${date} ${slot.toUpperCase()}</div>
-  <div class="tabs"><button class="${activeTab==='project'?'active':''}" data-tab="project" onclick="switchEditorTab('project')">Project</button><button class="${activeTab==='away'?'active':''}" data-tab="away" onclick="switchEditorTab('away')">Away</button><button class="${activeTab==='incident'?'active':''}" data-tab="incident" onclick="switchEditorTab('incident')">Incident</button><button class="${activeTab==='undetermined'?'active':''}" data-tab="undetermined" onclick="switchEditorTab('undetermined')">Undetermined</button><button class="${activeTab==='clear'?'active':''}" data-tab="clear" onclick="switchEditorTab('clear')">Clear</button></div>`;
-  html += `<div id="editor-tab-project" class="tab-content ${activeTab!=='project'?'hidden':''}"><div id="project-list">`;
-  projects.forEach((proj, i) => { html += `<div class="project-row"><input type="text" value="${proj.name}" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="${proj.pct}" onchange="updatePctTotal()"><span>%</span>${projects.length>1?`<button onclick="removeProject(${i})">✕</button>`:''}</div>`; });
-  html += `</div><button onclick="addEditorProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button><div class="pct-total" id="pct-total">Total: ${sum(projects.map(p=>p.pct))}%</div><div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" ${runChecked?'checked':''} onchange="window.editorRunToggle=this.checked"> 🏃 Run duty</label></div></div>`;
-  const awayTypes = ['vacation','public_holiday','sick_leave','training','conference','parental_leave','sabbatical','other'];
-  const currentAway = isAway ? slotData.away.type : ''; const currentNote = isAway ? (slotData.away.note || '') : '';
-  html += `<div id="editor-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="away-type">${awayTypes.map(t=>`<option value="${t}" ${currentAway===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="away-note" value="${currentNote}" placeholder="e.g. Family vacation"></div></div>`;
-  html += `<div id="editor-tab-incident" class="tab-content ${activeTab!=='incident'?'hidden':''}"><div class="form-row"><label>Text (e.g. ticket number)</label><input type="text" id="incident-text" value="${currentIncidentText}" placeholder="e.g. INC-1234"></div><p style="color:var(--fg-muted);padding:4px 0">Mark this half-day as incident work. Mutually exclusive with project/run/away.</p></div>`;
-  html += `<div id="editor-tab-undetermined" class="tab-content ${activeTab!=='undetermined'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Mark this half-day as "Project (TBD)".</p></div>
-  <div id="editor-tab-clear" class="tab-content ${activeTab!=='clear'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Clear this half-day (set to not filled).</p></div>
-  <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="editor-remote" ${slotData&&slotData.remote?'checked':''} onchange="editorFlagToggle('remote',this.checked)"> 🏠 Remote</label><label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:4px"><input type="checkbox" id="editor-offsite" ${slotData&&slotData.offsite?'checked':''} onchange="editorFlagToggle('offsite',this.checked)"> 🏢 Off-site</label></div>
-  <div class="form-actions"><button onclick="closeCellEditor()">Cancel</button><button onclick="saveCellEditor()" class="primary">Save</button></div>`;
-  html += projectNamesDatalist();
-  const editor = document.getElementById('cell-editor');
-  editor.innerHTML = html; editor.classList.remove('hidden');
-  editor.style.top = '50%'; editor.style.left = '50%'; editor.style.transform = 'translate(-50%,-50%)';
-  window.editorRunToggle = runChecked;
-  window.editorRemoteToggle = slotData && slotData.remote;
-  window.editorOffsiteToggle = slotData && slotData.offsite;
-}
-function editorFlagToggle(flag, checked) {
-  if (flag === 'remote') {
-    window.editorRemoteToggle = checked;
-    if (checked) { window.editorOffsiteToggle = false; const cb = document.getElementById('editor-offsite'); if (cb) cb.checked = false; }
-  } else {
-    window.editorOffsiteToggle = checked;
-    if (checked) { window.editorRemoteToggle = false; const cb = document.getElementById('editor-remote'); if (cb) cb.checked = false; }
-  }
-}
-function switchEditorTab(tab) { const editor = document.getElementById('cell-editor'); editor.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); editor.querySelectorAll('.tab-content').forEach(c => c.classList.add('hidden')); const btn = editor.querySelector(`.tabs button[data-tab="${tab}"]`); if (btn) btn.classList.add('active'); const tc = document.getElementById(`editor-tab-${tab}`); if (tc) tc.classList.remove('hidden'); if (tab === 'clear') { const rcb = document.getElementById('editor-remote'); if (rcb) { rcb.checked = false; window.editorRemoteToggle = false; } const ocb = document.getElementById('editor-offsite'); if (ocb) { ocb.checked = false; window.editorOffsiteToggle = false; } } }
-function addEditorProject() { const list = document.getElementById('project-list'); const div = document.createElement('div'); div.className = 'project-row'; div.innerHTML = `<input type="text" value="" placeholder="Project name" list="project-names" onchange="updatePctTotal()"><input type="number" min="0" max="100" value="50" onchange="updatePctTotal()"><span>%</span><button onclick="removeProject(Array.from(this.parentElement.parentElement.children).indexOf(this.parentElement))">✕</button>`; list.appendChild(div); updatePctTotal(); }
-function removeProject(idx) { const rows = document.getElementById('project-list').children; if (rows.length <= 1) return; rows[idx].remove(); updatePctTotal(); }
-function updatePctTotal() { const rows = document.getElementById('project-list').children; let total = 0; Array.from(rows).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
-async function saveCellEditor() {
-  const activeTab = document.querySelector('#cell-editor .tabs button.active')?.dataset.tab || 'project';
-  if (activeTab === 'clear') {
-    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    if (window.editorRemoteToggle) {
-      const data = { state: 'filled', away: null, incident: null, projects: [], run: false, remote: true, offsite: false };
-      await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-      State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    } else if (window.editorOffsiteToggle) {
-      const data = { state: 'filled', away: null, incident: null, projects: [], run: false, remote: false, offsite: true };
-      await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-      State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    } else {
-      await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot });
-      delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)];
-    }
-    selfFlashCell(); closeCellEditor(); render(); return;
-  }
-  if (activeTab === 'undetermined') {
-    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
-    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    selfFlashCell(); closeCellEditor(); render(); return;
-  }
-  if (activeTab === 'incident') {
-    const text = document.getElementById('incident-text').value.trim();
-    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: 'filled', away: null, incident: { text }, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
-    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    selfFlashCell(); closeCellEditor(); render(); return;
-  }
-  if (activeTab === 'away') {
-    const type = document.getElementById('away-type').value; const note = document.getElementById('away-note').value;
-    pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-    const data = { state: 'filled', away: { type, note }, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
-    await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-    State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-    selfFlashCell(); closeCellEditor(); render(); return;
-  }
-  // project tab
-  const rows = document.getElementById('project-list').children; const projects = []; let total = 0;
-  Array.from(rows).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
-  if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
-  pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]);
-  const data = { state: projects.length > 0 || window.editorRunToggle || window.editorRemoteToggle || window.editorOffsiteToggle ? 'filled' : 'not_filled', away: null, incident: null, projects, run: !!window.editorRunToggle, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle };
-  await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data });
-  State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data;
-  selfFlashCell(); closeCellEditor(); render();
-}
-async function setUndetermined() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); const data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, remote: !!window.editorRemoteToggle, offsite: !!window.editorOffsiteToggle }; await API.put('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot, data }); State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)] = data; selfFlashCell(); closeCellEditor(); render(); }
-async function clearSlot() { pushUndo([getSlotKey(editorPersonId, editorDate, editorSlot)]); await API.del('/planning/slot', { person_id: editorPersonId, date: editorDate, slot: editorSlot }); delete State.planning[getSlotKey(editorPersonId, editorDate, editorSlot)]; selfFlashCell(); closeCellEditor(); render(); }
-function closeCellEditor() { document.getElementById('cell-editor').classList.add('hidden'); editorPersonId = null; editorDate = null; editorSlot = null; }
+// ===== UNIFIED SLOT EDITOR (single cell + range) =====
+// Replaces the old single-cell editor and the range editor. Opening it with
+// one cell pre-fills that cell's data and shows its actual flag values; a
+// multi-cell drag pre-fills from the first non-empty cell and defaults the
+// run/remote/offsite flags to "don't change" (grey) so existing per-slot
+// values are preserved unless explicitly set. Run/remote/offsite are
+// tri-state toggles (grey=keep, ticked=set on, empty=set off).
 
-// ===== RANGE EDITOR =====
-function openRangeEditor(cells) {
-  rangeEditorCells = cells; rangeProjCount = 1;
+function openUnifiedEditor(cells) {
+  if (!cells || !cells.length) return;
+  rangeEditorCells = cells;
+  rangeProjCount = 1;
   rangeEditorPersonIds = [...new Set(cells.map(c => c.personId))];
-  const first = cells[0], last = cells[cells.length-1];
+  const first = cells[0], last = cells[cells.length - 1];
   const names = rangeEditorPersonIds.map(id => { const p = getPerson(id); return p ? p.name : id; });
   const nameText = names.length === 1 ? names[0] : `${names.length} people`;
-  let html = `<h2>Edit Range — ${escapeHtml(nameText)}</h2>
-    <div style="display:flex;gap:12px;margin-bottom:12px"><div class="form-row" style="flex:1"><label>Start date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="range-start-date" value="${first.date}" style="flex:1"><input type="date" id="range-start-picker" style="width:36px" onchange="datePickerToText(this,'range-start-date')"><select id="range-start-slot" style="width:60px"><option value="am" ${first.slot==='am'?'selected':''}>AM</option><option value="pm" ${first.slot==='pm'?'selected':''}>PM</option></select></div></div><div class="form-row" style="flex:1"><label>End date</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="range-end-date" value="${last.date}" style="flex:1"><input type="date" id="range-end-picker" style="width:36px" onchange="datePickerToText(this,'range-end-date')"><select id="range-end-slot" style="width:60px"><option value="am" ${last.slot==='am'?'selected':''}>AM</option><option value="pm" ${last.slot==='pm'?'selected':''}>PM</option></select></div></div></div>
-    <div id="range-project-list"><div class="project-row"><input type="text" id="range-proj-0" placeholder="Project name" list="project-names"><input type="number" min="0" max="100" value="100" id="range-pct-0" style="width:60px" onchange="updateRangePctTotal()"><span>%</span></div></div>
-    <button onclick="addRangeProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button>
-    <div class="pct-total" id="range-pct-total">Total: 100%</div>
-    <div style="margin-top:8px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-run" style="width:auto"> 🏃 Run duty</label></div>
-    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-remote" style="width:auto" onchange="if(this.checked){document.getElementById('range-offsite').checked=false}"> 🏠 Remote</label></div>
-    <div style="margin-top:4px"><label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="range-offsite" style="width:auto" onchange="if(this.checked){document.getElementById('range-remote').checked=false}"> 🏢 Off-site</label></div>
-    <div style="margin:12px 0;border-top:1px solid var(--border)"></div>
-    <div class="form-row"><label>Or set Away type:</label><select id="range-away-type"><option value="">— None —</option><option value="vacation">Vacation</option><option value="public_holiday">Public holiday</option><option value="sick_leave">Sick leave</option><option value="training">Training</option><option value="conference">Conference</option><option value="parental_leave">Parental leave</option><option value="sabbatical">Sabbatical</option><option value="other">Other</option></select></div>
-    <div class="form-row"><label>Or set Incident text:</label><input type="text" id="range-incident-text" placeholder="e.g. INC-1234"></div>
-    <div class="form-actions"><button onclick="closeModal()">Cancel</button><button onclick="applyRangeUndetermined()">Set Undetermined</button><button onclick="applyRangeClear()">Clear All</button><button class="primary" onclick="applyRangeEditor()">Apply to All</button></div>`;
+  const isRange = cells.length > 1;
+
+  // Pre-fill source: first non-empty cell in the selection (decision #2).
+  let src = null;
+  for (const c of cells) { const sd = getSlot(c.personId, c.date, c.slot); if (sd && sd.state !== 'not_filled') { src = sd; break; } }
+  const hasData = cells.some(c => { const sd = getSlot(c.personId, c.date, c.slot); return sd && sd.state !== 'not_filled'; });
+
+  // Determine the active tab from the source.
+  let activeTab = 'project';
+  if (src) {
+    if (src.state === 'undetermined') activeTab = 'undetermined';
+    else if (src.away) activeTab = 'away';
+    else if (src.incident) activeTab = 'incident';
+    else activeTab = 'project';
+  }
+
+  // Tri-state pre-fill. Grey ("don't change") is only meaningful when the
+  // initial range is multi-cell AND has existing data for that flag; otherwise
+  // the toggle is a plain on/off (two-state). Single-cell edits are always
+  // two-state (preserving one value == that value).
+  const hasFlag = f => cells.some(c => { const sd = getSlot(c.personId, c.date, c.slot); return sd && sd[f]; });
+  const hasRun = hasFlag('run'), hasRemote = hasFlag('remote'), hasOffsite = hasFlag('offsite');
+  function triInit(flag, has) {
+    if (isRange) return has ? 'grey' : 'empty';      // range: grey only if data exists
+    return (src && src[flag]) ? 'tick' : 'empty';     // single cell: actual value
+  }
+  const runTri0 = triInit('run', hasRun);
+  const remoteTri0 = triInit('remote', hasRemote);
+  const offsiteTri0 = triInit('offsite', hasOffsite);
+  const allowGreyRun = isRange && hasRun;
+  const allowGreyRemote = isRange && hasRemote;
+  const allowGreyOffsite = isRange && hasOffsite;
+
+  // Pre-fill tab-specific fields from the source.
+  const srcProjects = (src && src.projects && src.projects.length) ? src.projects : [{ name: '', pct: 100 }];
+  const srcAwayType = (src && src.away) ? src.away.type : 'vacation';
+  const srcAwayNote = (src && src.away) ? (src.away.note || '') : '';
+  const srcIncidentText = (src && src.incident) ? (src.incident.text || '') : '';
+  const srcRunNote = (src && src.run_note) ? src.run_note : '';
+
+  const awayTypes = ['vacation','public_holiday','sick_leave','training','conference','parental_leave','sabbatical','other'];
+
+  let html = `<h2>Edit — ${escapeHtml(nameText)} <span style="font-size:.8rem;color:var(--fg-muted);font-weight:400">${cells.length} slot${cells.length>1?'s':''}</span></h2>`;
+  // Range date/slot fields (editable so a single click can grow into a range).
+  html += `<div style="display:flex;gap:12px;margin-bottom:8px"><div class="form-row" style="flex:1"><label>Start</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="range-start-date" value="${first.date}" style="flex:1" oninput="updateOverwriteWarning()"><input type="date" id="range-start-picker" style="width:36px" onchange="datePickerToText(this,'range-start-date');updateOverwriteWarning()"><select id="range-start-slot" style="width:60px" onchange="updateOverwriteWarning()"><option value="am" ${first.slot==='am'?'selected':''}>AM</option><option value="pm" ${first.slot==='pm'?'selected':''}>PM</option></select></div></div><div class="form-row" style="flex:1"><label>End</label><div style="display:flex;gap:4px;align-items:center"><input type="text" id="range-end-date" value="${last.date}" style="flex:1" oninput="updateOverwriteWarning()"><input type="date" id="range-end-picker" style="width:36px" onchange="datePickerToText(this,'range-end-date');updateOverwriteWarning()"><select id="range-end-slot" style="width:60px" onchange="updateOverwriteWarning()"><option value="am" ${last.slot==='am'?'selected':''}>AM</option><option value="pm" ${last.slot==='pm'?'selected':''}>PM</option></select></div></div></div>`;
+  html += `<div id="uni-overwrite-warn" class="uni-warn empty"></div>`;
+  // Tabs
+  html += `<div class="tabs"><button class="${activeTab==='project'?'active':''}" data-tab="project" onclick="uniSwitchTab('project')">Project</button><button class="${activeTab==='away'?'active':''}" data-tab="away" onclick="uniSwitchTab('away')">Away</button><button class="${activeTab==='incident'?'active':''}" data-tab="incident" onclick="uniSwitchTab('incident')">Incident</button><button class="${activeTab==='undetermined'?'active':''}" data-tab="undetermined" onclick="uniSwitchTab('undetermined')">Undetermined</button><button class="${activeTab==='clear'?'active':''}" data-tab="clear" onclick="uniSwitchTab('clear')">Clear</button></div>`;
+  // Project tab
+  html += `<div id="uni-tab-project" class="tab-content ${activeTab!=='project'?'hidden':''}"><div id="range-project-list">`;
+  srcProjects.forEach((proj, i) => { html += `<div class="project-row"><input type="text" value="${escapeHtml(proj.name)}" placeholder="Project name" list="project-names" id="range-proj-${i}"><input type="number" min="0" max="100" value="${proj.pct}" id="range-pct-${i}" style="width:60px" onchange="updateRangePctTotal()"><span>%</span>${srcProjects.length>1?`<button onclick="removeRangeProject(this.parentElement)" style="padding:2px 6px;font-size:.75rem">✕</button>`:''}</div>`; });
+  rangeProjCount = srcProjects.length;
+  html += `</div><button onclick="addRangeProject()" style="font-size:.8rem;margin-top:4px">+ Add Project</button><div class="pct-total" id="range-pct-total">Total: ${sum(srcProjects.map(p=>p.pct))}%</div>`;
+  html += `<div style="margin-top:8px">${triToggleHtml('uni-run', '🏃 Run duty', runTri0, 'run', allowGreyRun)}</div>`;
+  html += `<input type="text" id="uni-run-note" value="${escapeHtml(srcRunNote)}" maxlength="2000" placeholder="e.g. INC-1234 — heads-up for colleagues (applies to run slots)" ${runTri0==='tick'?'':'disabled'} style="margin-top:4px;width:100%;font-size:.8rem"></div>`;
+  // Away tab
+  html += `<div id="uni-tab-away" class="tab-content ${activeTab!=='away'?'hidden':''}"><div class="form-row"><label>Type</label><select id="uni-away-type">${awayTypes.map(t=>`<option value="${t}" ${srcAwayType===t?'selected':''}>${t.replace(/_/g,' ')}</option>`).join('')}</select></div><div class="form-row"><label>Note (optional)</label><input type="text" id="uni-away-note" value="${escapeHtml(srcAwayNote)}" placeholder="e.g. Family vacation"></div><p style="color:var(--fg-muted);font-size:.8rem;padding:4px 0">Mutually exclusive with project/run/incident.</p></div>`;
+  // Incident tab
+  html += `<div id="uni-tab-incident" class="tab-content ${activeTab!=='incident'?'hidden':''}"><div class="form-row"><label>Text (e.g. ticket number)</label><input type="text" id="uni-incident-text" value="${escapeHtml(srcIncidentText)}" placeholder="e.g. INC-1234"></div><p style="color:var(--fg-muted);font-size:.8rem;padding:4px 0">Mutually exclusive with project/run/away.</p></div>`;
+  // Undetermined tab
+  html += `<div id="uni-tab-undetermined" class="tab-content ${activeTab!=='undetermined'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Mark the slot(s) as "Project (TBD)".</p></div>`;
+  // Clear tab
+  html += `<div id="uni-tab-clear" class="tab-content ${activeTab!=='clear'?'hidden':''}"><p style="color:var(--fg-muted);padding:8px 0">Clear the work state. Use the Remote/Off-site toggles below to keep a remote/off-site-only slot instead of deleting.</p></div>`;
+  // Global remote/off-site tri-state (apply on every tab)
+  html += `<div style="margin:10px 0;border-top:1px solid var(--border);padding-top:8px">${triToggleHtml('uni-remote', '🏠 Remote', remoteTri0, 'remote', allowGreyRemote)}<div style="height:6px"></div>${triToggleHtml('uni-offsite', '🏢 Off-site', offsiteTri0, 'offsite', allowGreyOffsite)}</div>`;
+  html += `<div class="form-actions"><button onclick="closeModal()">Cancel</button><button class="primary" onclick="applyUnifiedEditor()">Apply</button></div>`;
   html += projectNamesDatalist();
   showModal(html);
+  updateOverwriteWarning();
 }
+
+// Build the HTML for a tri-state flag toggle. state: 'grey' | 'tick' | 'empty'.
+function triToggleHtml(id, label, state, flag, allowGrey) {
+  const grey = allowGrey ? '1' : '0';
+  const hint = state === 'grey' ? 'don\u2019t change' : state === 'tick' ? 'set on' : 'set off';
+  return `<span class="tri" id="${id}" data-flag="${flag}" data-state="${state}" data-grey="${grey}" onclick="cycleTri('${id}')"><span class="tri-box"></span> ${label}<span class="tri-hint">(${hint})</span></span>`;
+}
+
+// Cycle a toggle. Three-state (grey -> tick -> empty -> grey) when grey is
+// allowed, otherwise two-state (tick <-> empty).
+function cycleTri(id) {
+  const el = document.getElementById(id); if (!el) return;
+  const allowGrey = el.dataset.grey === '1';
+  const cur = el.dataset.state || 'empty';
+  let next;
+  if (allowGrey) { const order = ['grey', 'tick', 'empty']; next = order[(order.indexOf(cur) + 1) % 3]; }
+  else { next = cur === 'tick' ? 'empty' : 'tick'; }
+  el.dataset.state = next;
+  const hint = next === 'grey' ? 'don\u2019t change' : next === 'tick' ? 'set on' : 'set off';
+  const h = el.querySelector('.tri-hint'); if (h) h.textContent = `(${hint})`;
+  // The run note field is only editable when run is set on.
+  if (el.dataset.flag === 'run') { const rn = document.getElementById('uni-run-note'); if (rn) rn.disabled = (next !== 'tick'); }
+}
+
+function uniSwitchTab(tab) {
+  document.querySelectorAll('#modal-content .tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  ['project','away','incident','undetermined','clear'].forEach(t => { const tc = document.getElementById(`uni-tab-${t}`); if (tc) tc.classList.toggle('hidden', t !== tab); });
+}
+
+// Categorise an existing slot for the overwrite breakdown.
+function uniCategorise(sd) {
+  if (!sd || sd.state === 'not_filled') {
+    if (sd && sd.remote) return 'remote-only';
+    if (sd && sd.offsite) return 'offsite-only';
+    return null;
+  }
+  if (sd.state === 'undetermined') return 'undetermined';
+  if (sd.away) return 'away';
+  if (sd.incident) return 'incident';
+  if (sd.run && sd.projects && sd.projects.length) return 'project+run';
+  if (sd.run) return 'run';
+  if (sd.projects && sd.projects.length) return 'project';
+  return 'other';
+}
+
+// Recompute the overwrite warning over the current range (live as the
+// date/slot fields change).
+function updateOverwriteWarning() {
+  const el = document.getElementById('uni-overwrite-warn');
+  if (!el) return;
+  let cells; try { cells = getRangeEditorCells(); } catch (e) { cells = []; }
+  // A single-slot edit overwrites that one slot implicitly; only warn for a
+  // range (and recompute live as the date/slot fields change it into one).
+  if (cells.length <= 1) { el.classList.add('empty'); el.innerHTML = ''; return; }
+  const cats = {}; let total = 0;
+  cells.forEach(c => { const cat = uniCategorise(getSlot(c.personId, c.date, c.slot)); if (cat) { total++; cats[cat] = (cats[cat] || 0) + 1; } });
+  if (total === 0) { el.classList.add('empty'); el.innerHTML = ''; return; }
+  el.classList.remove('empty');
+  const parts = Object.entries(cats).map(([k, v]) => `${v} ${k}`);
+  el.innerHTML = `⚠ Overwrites ${total} slot${total > 1 ? 's' : ''}: ${parts.join(', ')}`;
+}
+
+// resolve a tri-state against an existing boolean value.
+function resolveTri(tri, existing) { return tri === 'tick' ? true : tri === 'empty' ? false : existing; }
+
+async function applyUnifiedEditor() {
+  const tab = (document.querySelector('#modal-content .tabs button.active')?.dataset.tab) || 'project';
+  // Gather inputs.
+  let projects = []; let total = 0;
+  if (tab === 'project') {
+    Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({ name, pct }); total += pct; } });
+    if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; }
+  }
+  const runTri = document.getElementById('uni-run')?.dataset.state || 'grey';
+  const remoteTri = document.getElementById('uni-remote')?.dataset.state || 'grey';
+  const offsiteTri = document.getElementById('uni-offsite')?.dataset.state || 'grey';
+  const editorRunNote = (document.getElementById('uni-run-note')?.value || '').slice(0, 2000);
+  const awayType = document.getElementById('uni-away-type')?.value || 'vacation';
+  const awayNote = document.getElementById('uni-away-note')?.value || '';
+  const incidentText = document.getElementById('uni-incident-text')?.value.trim() || '';
+
+  const cells = getRangeEditorCells();
+  pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot)));
+
+  // Per-slot writes so "don't change" (grey) can preserve existing values.
+  const writes = cells.map(c => {
+    const ex = getSlot(c.personId, c.date, c.slot) || {};
+    const exRun = !!ex.run, exRemote = !!ex.remote, exOffsite = !!ex.offsite, exRunNote = ex.run_note || '';
+    // run tri-state is only meaningful on the project/clear tabs; on
+    // away/incident/undetermined run is cleared (note preserved).
+    const run = (tab === 'project' || tab === 'clear') ? resolveTri(runTri, exRun) : false;
+    const remote = resolveTri(remoteTri, exRemote);
+    const offsite = resolveTri(offsiteTri, exOffsite);
+    // run note: tick -> editor value; otherwise preserve the slot's note.
+    const runNote = (tab === 'project' || tab === 'clear') && runTri === 'tick' ? editorRunNote : exRunNote;
+
+    let data;
+    if (tab === 'away') {
+      data = { state: 'filled', away: { type: awayType, note: awayNote }, incident: null, projects: [], run: false, run_note: exRunNote, remote, offsite };
+    } else if (tab === 'incident') {
+      data = { state: 'filled', away: null, incident: { text: incidentText }, projects: [], run: false, run_note: exRunNote, remote, offsite };
+    } else if (tab === 'undetermined') {
+      data = { state: 'undetermined', away: null, incident: null, projects: [], run: false, run_note: exRunNote, remote, offsite };
+    } else if (tab === 'clear') {
+      if (!run && !remote && !offsite) return API.del('/planning/slot', { person_id: c.personId, date: c.date, slot: c.slot });
+      data = { state: 'filled', away: null, incident: null, projects: [], run, run_note: runNote, remote, offsite };
+    } else { // project
+      data = { state: (projects.length > 0 || run || remote || offsite) ? 'filled' : 'not_filled', away: null, incident: null, projects, run, run_note: runNote, remote, offsite };
+    }
+    return API.put('/planning/slot', { person_id: c.personId, date: c.date, slot: c.slot, data });
+  });
+  await Promise.all(writes);
+  await API.reloadPlanning();
+  queueFlash(cells, 'self');
+  rangeEditorCells = null;
+  closeModal();
+  render();
+}
+
+// ===== shared range helpers (kept) =====
 function addRangeProject() { const list = document.getElementById('range-project-list'); const idx = rangeProjCount++; const div = document.createElement('div'); div.className = 'project-row'; div.innerHTML = `<input type="text" id="range-proj-${idx}" placeholder="Project name" list="project-names"><input type="number" min="0" max="100" value="50" id="range-pct-${idx}" style="width:60px" onchange="updateRangePctTotal()"><span>%</span><button onclick="removeRangeProject(this.parentElement)" style="padding:2px 6px;font-size:.75rem">✕</button>`; list.appendChild(div); updateRangePctTotal(); }
 function removeRangeProject(row) { const list = document.getElementById('range-project-list'); if (list.children.length <= 1) return; row.remove(); updateRangePctTotal(); }
 function updateRangePctTotal() { const list = document.getElementById('range-project-list'); if (!list) return; let total = 0; Array.from(list.children).forEach(row => { const i = row.querySelector('input[type="number"]'); if (i) total += +i.value || 0; }); const el = document.getElementById('range-pct-total'); if (el) { el.textContent = `Total: ${total}%`; el.classList.toggle('over', total > 100); } }
-function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
+function isWeekend(dateStr) { const d = parseDate(dateStr); if (!d) return false; return ((d.getDay() + 6) % 7) >= 5; } // Mon=0..Sun=6
+function getRangeEditorCells() { const sd = document.getElementById('range-start-date').value.trim(); const ss = document.getElementById('range-start-slot').value; const ed = document.getElementById('range-end-date').value.trim(); const es = document.getElementById('range-end-slot').value; const slots = generateSlotsInRange(sd, ss, ed, es).filter(sl => _showWeekend || !isWeekend(sl.date)); const cells = []; rangeEditorPersonIds.forEach(pid => slots.forEach(sl => cells.push({personId: pid, date: sl.date, slot: sl.slot}))); return cells; }
 function generateSlotsInRange(startDate, startSlot, endDate, endSlot) { const result = []; const start = parseDate(startDate), end = parseDate(endDate); if (!start || !end) return result; let cd = new Date(start), cs = startSlot; while (cd < end || (cd.getTime() === end.getTime() && cs <= endSlot)) { result.push({date: fmtDate(cd), slot: cs}); if (cs === 'am') cs = 'pm'; else { cs = 'am'; cd = new Date(cd); cd.setDate(cd.getDate() + 1); } } return result; }
-async function applyRangeEditor() { const awayType = document.getElementById('range-away-type').value; const incidentText = document.getElementById('range-incident-text') ? document.getElementById('range-incident-text').value.trim() : ''; const run = document.getElementById('range-run').checked; const remote = document.getElementById('range-remote').checked; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; const projects = []; let total = 0; Array.from(document.getElementById('range-project-list').children).forEach(row => { const name = row.querySelector('input[type="text"]').value.trim(); const pct = +row.querySelector('input[type="number"]').value || 0; if (name) { projects.push({name, pct}); total += pct; } }); if (total > 100) { toast('Total percentage exceeds 100%', 'error'); return; } const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); let data; if (awayType) { data = {state:'filled',away:{type:awayType,note:''},incident:null,projects:[],run:false,remote,offsite}; } else if (incidentText) { data = {state:'filled',away:null,incident:{text:incidentText},projects:[],run:false,remote,offsite}; } else if (projects.length > 0) { data = {state:'filled',away:null,incident:null,projects,run,remote,offsite}; } else if (run) { data = {state:'filled',away:null,incident:null,projects:[],run:true,remote,offsite}; } else if (remote) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:true,offsite:false}; } else if (offsite) { data = {state:'filled',away:null,incident:null,projects:[],run:false,remote:false,offsite:true}; } else { data = {state:'not_filled',away:null,incident:null,projects:[],run:false}; } await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeUndetermined() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); const remote = document.getElementById('range-remote') ? document.getElementById('range-remote').checked : false; const offsite = document.getElementById('range-offsite') ? document.getElementById('range-offsite').checked : false; await API.put('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value, data: {state:'undetermined',away:null,incident:null,projects:[],run:false,remote,offsite} }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
-async function applyRangeClear() { const cells = getRangeEditorCells(); pushUndo(cells.map(c => getSlotKey(c.personId, c.date, c.slot))); await API.del('/planning/range', { person_ids: rangeEditorPersonIds, start_date: document.getElementById('range-start-date').value, start_slot: document.getElementById('range-start-slot').value, end_date: document.getElementById('range-end-date').value, end_slot: document.getElementById('range-end-slot').value }); await API.reloadPlanning(); queueFlash(cells, 'self'); rangeEditorCells = null; closeModal(); render(); }
 
 // ===== MODAL SYSTEM =====
 function showModal(html) { document.getElementById('modal-content').innerHTML = html; document.getElementById('overlay').classList.remove('hidden'); }
@@ -1804,7 +1892,7 @@ async function downloadICS(personId) {
       if (sd.away) { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Away: '+sd.away.type)}\r\nDESCRIPTION:${esc(sd.away.note||'')}\r\nCATEGORIES:${esc(sd.away.type)}\r\nEND:VEVENT\r\n`); return; }
       if (sd.incident) { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Incident'+(sd.incident.text?': '+sd.incident.text:'')+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nCATEGORIES:incident\r\nEND:VEVENT\r\n`); return; }
       if (sd.projects && sd.projects.length > 0) sd.projects.forEach(proj => { events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Project: '+proj.name+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nDESCRIPTION:${esc(proj.name+' ('+proj.pct+'%)'+(sd.run?' + Run':'')+(sd.remote?' + Remote':sd.offsite?' + Off-site':''))}\r\nCATEGORIES:project\r\nEND:VEVENT\r\n`); });
-      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty'+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\nCATEGORIES:run\r\nEND:VEVENT\r\n`);
+      else if (sd.run) events.push(`BEGIN:VEVENT\r\nUID:${uid()}@teamviz\r\nDTSTAMP:${fmtICS(new Date())}Z\r\nDTSTART:${fmtICS(dts)}\r\nDTEND:${fmtICS(dte)}\r\nSUMMARY:${esc('Run duty'+(sd.remote?' 🏠':sd.offsite?' 🏢':''))}\r\n${sd.run_note?`DESCRIPTION:${icsEscape(sd.run_note)}\r\n`:''}CATEGORIES:run\r\nEND:VEVENT\r\n`);
     });
   }
   let ics = 'BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//TeamVisualizer//V1//EN\r\n' + events.join('') + 'END:VCALENDAR\r\n';
@@ -1831,19 +1919,18 @@ function showHelp() { showModal(`<h2>Keyboard Shortcuts</h2><div class="help-sho
 // ===== KEYBOARD SHORTCUTS =====
 function modalOpen() {
   const ov = document.getElementById('overlay');
-  const ce = document.getElementById('cell-editor');
-  return (ov && !ov.classList.contains('hidden')) || (ce && !ce.classList.contains('hidden'));
+  return ov && !ov.classList.contains('hidden');
 }
 document.addEventListener('keydown', (e) => {
   const tag = (e.target.tagName || '').toLowerCase();
   if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
   if (e.ctrlKey && e.key === 'z') { e.preventDefault(); undo(); }
   if ((e.ctrlKey && e.key === 'Z') || (e.ctrlKey && e.key === 'y')) { e.preventDefault(); redo(); }
-  if (e.key === 'Escape') { closeCellEditor(); closeModal(); }
-  if (e.key === 'u' && !e.ctrlKey && editorPersonId) setUndetermined();
-  if (e.key === 'r' && !e.ctrlKey && editorPersonId) { window.editorRunToggle = !window.editorRunToggle; const cb = document.getElementById('cell-editor')?.querySelector('input[type="checkbox"]'); if (cb) cb.checked = window.editorRunToggle; }
+  if (e.key === 'Escape') { closeModal(); }
+  if (e.key === 'u' && !e.ctrlKey && modalOpen()) uniSwitchTab('undetermined');
+  if (e.key === 'r' && !e.ctrlKey && modalOpen() && document.getElementById('uni-run')) { cycleTri('uni-run'); }
   // Arrow keys move the timeframe in the team grid & availability views
-  if (editorPersonId || modalOpen()) return;
+  if (modalOpen()) return;
   if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
     const dir = e.key === 'ArrowLeft' ? -1 : 1;
     if (currentView === 'team') { scrollOffset += dir; savePrefs(); API.reloadPlanning().then(render); e.preventDefault(); }
