@@ -264,11 +264,12 @@ function getSlotClass(slotData) {
     return 'not-filled';
   }
   const flagCls = slotData.remote ? ' remote' : slotData.offsite ? ' offsite' : '';
+  const noteCls = (slotData.run && slotData.run_note) ? ' has-run-note' : '';
   if (slotData.state === 'undetermined') return 'undetermined' + flagCls;
   if (slotData.away) return 'away' + (slotData.away.tentative ? ' tentative' : '') + flagCls;
   if (slotData.incident) return 'incident' + flagCls;
-  if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run' + flagCls;
-  if (slotData.run) return 'run' + flagCls;
+  if (slotData.run && slotData.projects && slotData.projects.length > 0) return 'project run' + noteCls + flagCls;
+  if (slotData.run) return 'run' + noteCls + flagCls;
   if (slotData.projects && slotData.projects.length > 0) return 'project' + flagCls;
   if (slotData.remote) return 'not-filled remote';
   if (slotData.offsite) return 'not-filled offsite';
@@ -399,6 +400,21 @@ async function changeOnCallPerson(oldPid, weekStart, newPid) {
 }
 
 // ===== RUN COVERAGE =====
+// Render the "On run" people for a week as a one-line-per-person list with
+// each person's run-note(s) on the right (joined with " . "). withHours adds the
+// run half-day count after the name.
+function runPeopleListHtml(people, ws, withHours) {
+  if (!people.length) return '<div style="font-size:.8rem;margin-top:4px;color:var(--fg-muted)">On run: None</div>';
+  let h = '<div style="font-size:.8rem;margin-top:4px">On run:</div>';
+  people.forEach(p => {
+    const notes = collectRunNotes(p.id, ws);
+    const hrs = withHours ? ` (${calcRunRatio(p.id, ws).run}h)` : '';
+    const label = `${esc(p.avatar_emoji||'\u{1F464}')} ${esc(p.name)}${hrs}`;
+    h += `<div style="font-size:.8rem;display:flex;gap:8px;align-items:baseline;margin-top:1px"><span style="min-width:120px;white-space:nowrap">${label}</span><span style="color:${notes?'var(--fg)':'var(--fg-muted)'};flex:1;white-space:normal;overflow:hidden;text-overflow:ellipsis">${notes ? esc(notes.replace(/\n/g,' \u00b7 ')) : '\u2014'}</span></div>`;
+  });
+  return h;
+}
+
 function calcRunRatio(personId, weekStart) {
   const days = getWeekDays(parseDate(weekStart)); let working = 0, run = 0;
   days.forEach(d => { const ds = fmtDate(d);
@@ -935,13 +951,12 @@ function renderRunCoverage(container) {
     if (anyBelow) html += `<div class="warning-banner">⚠️ Some slots below target of ${runTarget}</div>`;
     if (mode === 'rotation') {
       const runPeople = getRunPeople(ws);
-      const names = runPeople.map(p => { const notes = collectRunNotes(p.id, ws); return notes ? `<span title="${esc(notes)}">${esc(p.name)}*</span>` : esc(p.name); }).join(', ');
-      html += `<div style="font-size:.8rem;margin-top:4px">On run: ${names || 'None'}</div>`;
+      html += runPeopleListHtml(runPeople, ws, false);
       if (canEdit()) html += `<button onclick="showRotationModal('${ws}')">Assign Run Person</button>`;
     } else {
       const people = getActivePeople();
-      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0).map(p => { const notes = collectRunNotes(p.id, ws); const tip = notes ? ` title="${esc(notes)}"` : ''; return `<span${tip}>${esc(p.avatar_emoji)} ${esc(p.name)} (${calcRunRatio(p.id, ws).run}h)${notes?'*':''}</span>`; });
-      if (runPeople.length > 0) html += `<div style="font-size:.75rem;margin-top:4px">On run: ${runPeople.join(', ')}</div>`;
+      const runPeople = people.filter(p => calcRunRatio(p.id, ws).run > 0);
+      if (runPeople.length > 0) html += runPeopleListHtml(runPeople, ws, true);
     }
     html += '</div>';
   });
