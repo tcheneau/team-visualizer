@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"github.com/teamviz/team-visualizer/internal/model"
@@ -20,6 +21,11 @@ func (a *AuthService) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		user, token, err := a.AuthFromRequest(r)
 		if err != nil {
+			if errors.Is(err, ErrAccessDenied) {
+				// Authenticated, but no group maps to an application role.
+				http.Error(w, `{"error":"forbidden","message":"account is not a member of any group that grants access"}`, http.StatusForbidden)
+				return
+			}
 			http.Error(w, `{"error":"unauthorized"}`, http.StatusUnauthorized)
 			return
 		}

@@ -11,6 +11,7 @@
 #   admin  → tvz-admin group    → app admin role
 #   user   → tvz-normal group   → app normal role
 #   rouser → tvz-readonly group → app read-only role
+#   nouser → (no group)         → app: access denied (tests the deny page)
 #
 # Usage:
 #   docker compose -f docker-compose.demo.yml up -d --build

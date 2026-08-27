@@ -78,6 +78,9 @@ done
 
 # ---- users -----------------------------------------------------------------
 echo "=== Ensuring users ==="
+# Usage: create_user <username> <password> <group|""> <first-name> <last-name>
+# An empty group skips membership assignment (user maps to no app role →
+# denied; used to exercise the access-denied page).
 create_user() {
   local U="$1" P="$2" G="$3" FN="$4" LN="$5"
   local U_ID
@@ -94,14 +97,19 @@ create_user() {
   else
     echo "  User already present: $U"
   fi
-  curl -fs -X PUT -H "Authorization: Bearer $TOKEN" \
-    "$KC_URL/admin/realms/$REALM/users/$U_ID/groups/${GROUP_IDS[$G]}" \
-    >/dev/null 2>&1 || true   # assigning an already-assigned group is not an error
+  if [ -n "$G" ]; then
+    curl -fs -X PUT -H "Authorization: Bearer $TOKEN" \
+      "$KC_URL/admin/realms/$REALM/users/$U_ID/groups/${GROUP_IDS[$G]}" \
+      >/dev/null 2>&1 || true   # assigning an already-assigned group is not an error
+  fi
 }
 
 create_user "admin"  "admin"  "tvz-admin"    "Admin"  "User"
 create_user "user"   "user"   "tvz-normal"   "Normal" "User"
 create_user "rouser" "rouser" "tvz-readonly" "Read"   "Only"
+# nouser belongs to NO group: authenticates fine, but maps to no app role and
+# is denied with the access-denied page — handy for testing that flow.
+create_user "nouser" "nouser" ""             "No"     "Group"
 
 # ---- OIDC client -----------------------------------------------------------
 echo "=== Ensuring OIDC client: $CLIENT_SLUG ==="
@@ -190,8 +198,9 @@ echo " Users (password = username):"
 echo "   admin  → tvz-admin    → app: admin"
 echo "   user   → tvz-normal   → app: normal"
 echo "   rouser → tvz-readonly → app: readonly"
+echo "   nouser → (no group)   → app: access denied page"
 echo ""
-echo " Keycloak console: http://localhost:8090"
+echo " Keycloak console: https://localhost:8443/admin (import the demo root CA first)"
 echo " Admin login: admin / admin"
 echo ""
 echo " App URL: http://localhost:8080"

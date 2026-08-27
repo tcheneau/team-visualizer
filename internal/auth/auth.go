@@ -168,8 +168,14 @@ func loadExtraCACertificates(cfg *config.Config) ([]byte, error) {
 }
 
 // mapGroupsToRole maps Keycloak group names to app roles.
-func (a *AuthService) mapGroupsToRole(groups []string) model.Role {
-	role := model.RoleReadonly
+//
+// All three configured groups are matched explicitly — including
+// TVZ_READONLY_GROUP, which previously only existed as an implicit fallback.
+// If the token contains none of the configured groups, ok=false is returned
+// and the caller must deny access (fail closed): unknown or missing group
+// claims no longer silently grant read-only access.
+func (a *AuthService) mapGroupsToRole(groups []string) (model.Role, bool) {
+	var role model.Role // "" until a configured group matches
 	for _, g := range groups {
 		switch g {
 		case a.cfg.AdminGroup:
@@ -178,19 +184,28 @@ func (a *AuthService) mapGroupsToRole(groups []string) model.Role {
 			if role != model.RoleAdmin {
 				role = model.RoleNormal
 			}
+		case a.cfg.ReadonlyGroup:
+			if role == "" { // never downgrade an already-mapped higher role
+				role = model.RoleReadonly
+			}
 		}
 	}
-	return role
+	if role == "" {
+		return "", false
+	}
+	return role, true
 }
 
-// extractUserFromDevHeaders reads dev-mode headers and returns (username, role).
-func (a *AuthService) extractUserFromDevHeaders(r *http.Request) (string, model.Role) {
+// extractUserFromDevHeaders reads dev-mode headers and returns
+// (username, role, mapped). A non-empty username with mapped=false means the
+// user authenticated but no configured group matched — access is denied.
+func (a *AuthService) extractUserFromDevHeaders(r *http.Request) (string, model.Role, bool) {
 	username := r.Header.Get("X-Dev-User")
 	if username == "" {
-		return "", ""
+		return "", "", false
 	}
-	groups := splitGroups(r.Header.Get("X-Dev-Groups"))
-	return username, a.mapGroupsToRole(groups)
+	role, mapped := a.mapGroupsToRole(splitGroups(r.Header.Get("X-Dev-Groups")))
+	return username, role, mapped
 }
 
 // IssueToken creates a JWT for the given user.
@@ -228,7 +243,11 @@ func (a *AuthService) ValidateToken(tokenStr string) (*Claims, error) {
 func (a *AuthService) AuthFromRequest(r *http.Request) (*model.User, string, error) {
 	// 1. Dev mode headers (only when DevMode is enabled)
 	if a.cfg.DevMode {
-		if username, role := a.extractUserFromDevHeaders(r); username != "" {
+		if username, role, mapped := a.extractUserFromDevHeaders(r); username != "" {
+			if !mapped {
+				// Fail closed: dev headers present but no recognized group.
+				return nil, "", ErrAccessDenied
+			}
 			user, err := a.db.UpsertUser(username, role)
 			if err != nil {
 				return nil, "", err
@@ -359,7 +378,7 @@ func (a *AuthService) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	var claims struct {
 		PreferredUsername string   `json:"preferred_username"`
-		Groups           []string `json:"groups"`
+		Groups            []string `json:"groups"`
 	}
 	if err := idToken.Claims(&claims); err != nil {
 		http.Error(w, "failed to parse claims: "+err.Error(), http.StatusInternalServerError)
@@ -371,7 +390,20 @@ func (a *AuthService) CallbackHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	role := a.mapGroupsToRole(claims.Groups)
+	role, mapped := a.mapGroupsToRole(claims.Groups)
+	if !mapped {
+		// Authenticated at the provider, but holds none of the groups that
+		// grant access — fail closed with an explanatory page, no session.
+		// The app session cookie is cleared as well: a stale session from an
+		// earlier login must not survive a denied login.
+		clearCookie(w, "teamviz_oauth_state")
+		clearCookie(w, "teamviz_oauth_verifier")
+		clearCookie(w, "teamviz_token")
+		log.Printf("auth: access denied for user %s: no recognized group in token (groups=%v)",
+			claims.PreferredUsername, claims.Groups)
+		a.renderAccessDenied(w, claims.PreferredUsername, claims.Groups)
+		return
+	}
 
 	user, err := a.db.UpsertUser(claims.PreferredUsername, role)
 	if err != nil {
@@ -432,6 +464,11 @@ type Claims struct {
 }
 
 var ErrNoAuth = &authError{"no authentication provided"}
+
+// ErrAccessDenied is returned when the user authenticated (dev headers) but
+// their group claims map to no application role. The OIDC flow renders the
+// access-denied page instead; the middleware answers API calls with 403.
+var ErrAccessDenied = &authError{"account is not a member of any group that grants access"}
 
 type authError struct{ msg string }
 

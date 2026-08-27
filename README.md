@@ -46,6 +46,7 @@ Wait ~40s for Keycloak to start and provision, then open `http://localhost:8080`
 | `admin`  | `admin`  | `tvz-admin`     | admin       |
 | `user`   | `user`   | `tvz-normal`    | normal      |
 | `rouser` | `rouser` | `tvz-readonly`  | read-only   |
+| `nouser` | `nouser` | *(none)*        | denied — logs in, then lands on the access-denied page |
 
 #### Architecture
 
@@ -266,6 +267,8 @@ TLS certificate validation for OIDC backend calls (discovery, JWKS, token exchan
 | Change theme                 |  ✅   |  ✅    |    ✅     |
 
 **Auth model:** The app talks to Keycloak directly via OIDC (Authorization Code flow with PKCE). On login, the app validates the Keycloak ID token, extracts the `preferred_username` and `groups` claims, and issues its own HS256 JWT as the session token (stored in an HttpOnly cookie). The JWT is used for API auth and WebSocket connections.
+
+**Group mapping is explicit and fails closed:** all three groups (`TVZ_ADMIN_GROUP`, `TVZ_NORMAL_GROUP`, `TVZ_READONLY_GROUP`) are matched directly against the token's `groups` claim. Users whose token contains none of them are denied access — the OIDC callback renders a standalone "Access denied" page (HTTP 403) listing the recognized groups and the groups actually received (helps diagnose a missing groups mapper), with sign-out/retry actions; no application session is created and any existing session cookie is cleared. Dev-mode `X-Dev-User` requests without a recognized group are rejected with HTTP 403 the same way. Already-issued session JWTs keep their previous role until they expire — but a denied login evicts the session cookie, so you cannot slip back into an old session afterwards.
 
 **Settings key access:**
 - All roles: `window_weeks`, `run_mode`, `run_target_persons`

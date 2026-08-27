@@ -10,16 +10,21 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/teamviz/team-visualizer/internal/config"
+	"github.com/teamviz/team-visualizer/internal/model"
+	"github.com/teamviz/team-visualizer/internal/store"
 )
 
 // ---- certificate test helpers ----
@@ -208,6 +213,104 @@ func TestOIDCClientRejectsMissingCAFile(t *testing.T) {
 		t.Fatal("expected error for missing CA file")
 	}
 }
+
+// ---- role mapping (fail closed) ----
+
+func TestMapGroupsToRole(t *testing.T) {
+	svc := &AuthService{cfg: &config.Config{
+		AdminGroup: "tvz-admin", NormalGroup: "tvz-normal", ReadonlyGroup: "tvz-readonly",
+	}}
+	cases := []struct {
+		name   string
+		groups []string
+		want   model.Role
+		wantOK bool
+	}{
+		{"no groups claim", nil, "", false},
+		{"empty groups claim", []string{}, "", false},
+		{"only unknown groups", []string{"some-other-app", "random"}, "", false},
+		{"readonly group maps explicitly", []string{"tvz-readonly"}, model.RoleReadonly, true},
+		{"normal group", []string{"tvz-normal"}, model.RoleNormal, true},
+		{"admin group", []string{"tvz-admin"}, model.RoleAdmin, true},
+		{"readonly never downgrades admin", []string{"tvz-admin", "tvz-readonly"}, model.RoleAdmin, true},
+		{"normal beats readonly", []string{"tvz-readonly", "tvz-normal"}, model.RoleNormal, true},
+		{"normal never downgrades admin", []string{"tvz-admin", "tvz-normal"}, model.RoleAdmin, true},
+		{"unknown alongside recognized", []string{"unknown", "tvz-readonly"}, model.RoleReadonly, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			role, ok := svc.mapGroupsToRole(tc.groups)
+			if ok != tc.wantOK || (ok && role != tc.want) {
+				t.Fatalf("mapGroupsToRole(%v) = (%q, %v), want (%q, %v)", tc.groups, role, ok, tc.want, tc.wantOK)
+			}
+		})
+	}
+}
+
+// Dev headers with no recognized group must be denied (fail closed) and the
+// user must not be persisted; a recognized readonly group maps explicitly.
+func TestAuthFromRequestDevDeniesUnmappedGroups(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer db.Close()
+
+	cfg := &config.Config{
+		DevMode:       true,
+		JWTSecret:     []byte("test-secret"),
+		AdminGroup:    "tvz-admin",
+		NormalGroup:   "tvz-normal",
+		ReadonlyGroup: "tvz-readonly",
+	}
+	svc := New(cfg, db)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
+	req.Header.Set("X-Dev-User", "bob")
+	req.Header.Set("X-Dev-Groups", "tvz-readonly")
+	user, _, err := svc.AuthFromRequest(req)
+	if err != nil {
+		t.Fatalf("readonly member denied: %v", err)
+	}
+	if user.Role != model.RoleReadonly {
+		t.Fatalf("role = %q, want readonly", user.Role)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	req2.Header.Set("X-Dev-User", "mallory")
+	req2.Header.Set("X-Dev-Groups", "unrelated-group")
+	if _, _, err := svc.AuthFromRequest(req2); !errors.Is(err, ErrAccessDenied) {
+		t.Fatalf("want ErrAccessDenied, got %v", err)
+	}
+	if _, err := db.GetUser("mallory"); err == nil {
+		t.Fatal("denied user must not be persisted")
+	}
+}
+
+func TestRenderAccessDeniedPage(t *testing.T) {
+	svc := &AuthService{cfg: &config.Config{
+		AdminGroup: "tvz-admin", NormalGroup: "tvz-normal", ReadonlyGroup: "tvz-readonly",
+	}}
+	rec := httptest.NewRecorder()
+	svc.renderAccessDenied(rec, `<script>alert(1)</script>`, []string{"weird & group"})
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "&lt;script&gt;") {
+		t.Fatal("username not HTML-escaped")
+	}
+	if strings.Contains(body, "<script>") {
+		t.Fatal("raw script tag leaked into page")
+	}
+	for _, want := range []string{"tvz-admin", "tvz-normal", "tvz-readonly", "weird &amp; group", "/auth/logout", "/auth/login"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("page missing %q", want)
+		}
+	}
+}
+
 // TestDemoCertsIntegration validates the PKI produced by
 // scripts/generate-demo-certs.sh (the docker-compose demo certificates)
 // against the real OIDC client: system roots must reject the demo leaf,
