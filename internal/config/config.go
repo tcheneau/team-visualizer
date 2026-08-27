@@ -19,7 +19,9 @@ type Config struct {
 	OIDCClientID           string
 	OIDCClientSecret       string
 	OIDCRedirectURL        string
-	OIDCInternalHost       string // optional: Docker-internal host:port for OIDC backend calls
+	OIDCInternalHost       string   // optional: Docker-internal host:port for OIDC backend calls
+	OIDCCAFiles            []string // optional: extra root CA PEM file(s) to trust for OIDC HTTPS calls
+	OIDCAInline            string   // optional: extra root CA(s) as inline PEM (or base64-encoded PEM)
 	OIDCScopes             []string
 	OIDCPostLogoutRedirect string
 
@@ -46,6 +48,8 @@ func Load() (*Config, error) {
 		OIDCClientSecret: envOr("TVZ_OIDC_CLIENT_SECRET", ""),
 		OIDCRedirectURL:  envOr("TVZ_OIDC_REDIRECT_URL", ""),
 		OIDCInternalHost: envOr("TVZ_OIDC_INTERNAL_HOST", ""),
+		OIDCCAFiles:      splitCommaList(envOr("TVZ_OIDC_CA_FILE", "")),
+		OIDCAInline:      envOr("TVZ_OIDC_CA", ""),
 		OIDCScopes:       splitCommaList(envOr("TVZ_OIDC_SCOPES", "openid,email,profile")),
 
 		AdminGroup:    envOr("TVZ_ADMIN_GROUP", "admin"),

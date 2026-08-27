@@ -1,10 +1,11 @@
 # ============================================================
-# Team Visualizer — Demo with Keycloak + Apache reverse proxy
+# Team Visualizer — Demo with Keycloak (HTTPS) + Apache reverse proxy
 # ============================================================
 # Brings up:
-#   1. Keycloak (OIDC auth server, pre-provisioned with 3 users + client)
-#   2. Apache (reverse proxy with WebSocket support, TLS-ready)
-#   3. Team Visualizer (Go app, talks to Keycloak directly via OIDC)
+#   1. certs-init (one-shot: ephemeral demo root CA + TLS cert for Keycloak)
+#   2. Keycloak (OIDC auth server over https://:8443, pre-provisioned with 3 users + client)
+#   3. Apache (reverse proxy with WebSocket support, TLS-ready)
+#   4. Team Visualizer (Go app, talks to Keycloak over TLS, trusts the demo CA)
 #
 # Users (password = username):
 #   admin  → tvz-admin group    → app admin role
@@ -15,11 +16,33 @@
 #   docker compose -f docker-compose.demo.yml up -d --build
 #   open http://localhost:8080
 #
+# Keycloak's login page is served at https://localhost:8443. Its certificate is
+# issued by the ephemeral demo root CA (kept in the "demo-certs" volume) — the
+# same situation as a production deployment with a private/internal CA. Trust
+# it in your browser/OS, or export it with:
+#   docker compose -f docker-compose.demo.yml exec teamviz cat /certs/root-ca.pem > teamviz-demo-root-ca.pem
+# The app itself trusts it automatically via TVZ_OIDC_CA_FILE.
+#
 # First launch takes ~40s for Keycloak + provisioning.
-# Keycloak admin console: http://localhost:8090 (admin/admin)
+# Keycloak admin console: https://localhost:8443/admin (admin/admin; import the
+# demo root CA first — the plain-HTTP :8090 listener stays enabled only for the
+# in-container healthcheck and provisioning).
 # ============================================================
 
 services:
+  # ---------- Demo PKI (one-shot) ----------
+  # Generates an ephemeral root CA + TLS server certificate for Keycloak into
+  # the shared "demo-certs" volume. Idempotent — skipped when present.
+  # Mirrors a corporate PKI: the root CA is trusted by the app (TVZ_OIDC_CA_FILE)
+  # and, optionally, by the user's browser.
+  certs-init:
+    image: alpine:3.20
+    entrypoint: ["/bin/sh", "/scripts/generate-demo-certs.sh"]
+    volumes:
+      - ./scripts/generate-demo-certs.sh:/scripts/generate-demo-certs.sh:ro
+      - demo-certs:/certs
+    restart: "no"
+
   # ---------- Keycloak (OIDC provider) ----------
   keycloak:
     image: quay.io/keycloak/keycloak:25.0
@@ -27,14 +50,25 @@ services:
       KEYCLOAK_ADMIN: admin
       KEYCLOAK_ADMIN_PASSWORD: admin
       KC_DB: dev-file
-      KC_HOSTNAME: http://localhost:8090
+      # Pin the frontend/issuer to the HTTPS URL — the discovery document's
+      # "issuer" must exactly match TVZ_OIDC_ISSUER (go-oidc does an exact match).
+      KC_HOSTNAME: https://localhost:8443
+      # Demo only: plain HTTP stays enabled on :8080 for the container healthcheck
+      # and kcadm provisioning. Production deployments should serve TLS only.
       KC_HTTP_ENABLED: "true"
-      KC_PROXY: edge
-    ports:
-      - "8090:8080"
+      KC_HTTPS_PORT: "8443"
+      KC_HTTPS_CERTIFICATE_FILE: /tls/tls.crt
+      KC_HTTPS_CERTIFICATE_KEY_FILE: /tls/tls.key
     command: ["start-dev"]
+    ports:
+      - "8443:8443"
+      - "8090:8080"
     volumes:
       - keycloak-data:/opt/keycloak/data
+      - demo-certs:/tls:ro
+    depends_on:
+      certs-init:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080;echo -e 'GET /health/ready HTTP/1.1\r\nhost: http://localhost\r\nConnection: close\r\n\r\n' >&3;if [ $? -eq 0 ]; then echo 'Healthcheck Successful';exit 0;else echo 'Healthcheck Failed';exit 1;fi;"]
       interval: 5s
@@ -77,16 +111,22 @@ services:
       TVZ_ADMIN_GROUP: "tvz-admin"
       TVZ_NORMAL_GROUP: "tvz-normal"
       TVZ_READONLY_GROUP: "tvz-readonly"
-      # OIDC (direct Keycloak, no oauth2-proxy)
-      TVZ_OIDC_ISSUER: http://localhost:8090/realms/teamviz
+      # OIDC (direct Keycloak over HTTPS, no oauth2-proxy)
+      TVZ_OIDC_ISSUER: https://localhost:8443/realms/teamviz
       TVZ_OIDC_CLIENT_ID: teamviz-demo
       TVZ_OIDC_CLIENT_SECRET: demo-secret-not-for-production-use
       TVZ_OIDC_REDIRECT_URL: http://localhost:8080/auth/callback
       # Docker-internal host for OIDC backend calls (discovery, JWKS, token exchange).
-      # The app's OIDC HTTP client rewrites localhost:8090 → keycloak:8080 at the TCP dial level.
-      TVZ_OIDC_INTERNAL_HOST: keycloak:8080
+      # The app's OIDC HTTP client rewrites localhost:8443 → keycloak:8443 at the TCP
+      # dial level; TLS/SNI and hostname validation stay on "localhost" (cert SAN).
+      TVZ_OIDC_INTERNAL_HOST: keycloak:8443
+      # Trust the ephemeral demo root CA for OIDC HTTPS calls. Production
+      # deployments mount their private CA's root certificate the same way
+      # (or use TVZ_OIDC_CA with inline PEM).
+      TVZ_OIDC_CA_FILE: /certs/root-ca.pem
     volumes:
       - teamviz-data:/data
+      - demo-certs:/certs:ro
     restart: unless-stopped
     depends_on:
       keycloak:
@@ -103,3 +143,4 @@ services:
 volumes:
   keycloak-data:
   teamviz-data:
+  demo-certs:

@@ -18,6 +18,15 @@ services:
       TVZ_OIDC_CLIENT_SECRET: ${TVZ_OIDC_CLIENT_SECRET:-}
       TVZ_OIDC_REDIRECT_URL: ${TVZ_OIDC_REDIRECT_URL:-}
       TVZ_OIDC_INTERNAL_HOST: ${TVZ_OIDC_INTERNAL_HOST:-}
+      # Optional: trust extra root CA(s) for an HTTPS OIDC provider whose cert is
+      # issued by a private/internal CA. Either mount the PEM file and point
+      # TVZ_OIDC_CA_FILE at it, e.g. add to this service:
+      #   volumes:
+      #     - ./certs/corp-root-ca.pem:/certs/corp-root-ca.pem:ro
+      # and set TVZ_OIDC_CA_FILE=/certs/corp-root-ca.pem ...
+      # ...or pass the PEM (or its base64 encoding) inline via TVZ_OIDC_CA.
+      TVZ_OIDC_CA_FILE: ${TVZ_OIDC_CA_FILE:-}
+      TVZ_OIDC_CA: ${TVZ_OIDC_CA:-}
     volumes:
       - teamviz-data:/data
     restart: unless-stopped

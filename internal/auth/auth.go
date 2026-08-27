@@ -1,14 +1,18 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"log"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"time"
 
@@ -40,25 +44,11 @@ func New(cfg *config.Config, db *store.Store) *AuthService {
 		return svc
 	}
 
-	// Build custom HTTP client if internal host is set (Docker networking)
-	httpClt := http.DefaultClient
-	if cfg.OIDCInternalHost != "" {
-		issuerURL, err := url.Parse(cfg.OIDCIssuer)
-		if err != nil {
-			log.Fatalf("auth: invalid OIDC issuer URL: %v", err)
-		}
-		issuerHost := issuerURL.Host
-		internalHost := cfg.OIDCInternalHost
-		transport := &http.Transport{
-			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				if addr == issuerHost {
-					addr = internalHost
-				}
-				return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, addr)
-			},
-		}
-		httpClt = &http.Client{Transport: transport}
-		log.Printf("auth: OIDC internal host rewrite %s -> %s", issuerHost, internalHost)
+	// Build the OIDC HTTP client used for all backend calls
+	// (discovery, JWKS fetch, token exchange, userinfo).
+	httpClt, err := buildOIDCHTTPClient(cfg)
+	if err != nil {
+		log.Fatalf("auth: %v", err)
 	}
 	svc.httpClient = httpClt
 
@@ -84,6 +74,97 @@ func New(cfg *config.Config, db *store.Store) *AuthService {
 
 	log.Printf("auth: OIDC provider initialized (issuer=%s)", cfg.OIDCIssuer)
 	return svc
+}
+
+// buildOIDCHTTPClient returns the HTTP client used for all OIDC backend calls.
+//
+// TLS policy: certificate validation is always enabled — there is deliberately
+// no "skip TLS verify" switch. The client trusts the system root CA store by
+// default (the Docker image installs ca-certificates). Root CA(s) of a private
+// PKI (e.g. an internal Keycloak behind a corporate CA) can be added via
+// TVZ_OIDC_CA_FILE (path(s) to a PEM file) and/or TVZ_OIDC_CA (inline PEM).
+// Extra roots are appended to a copy of the system pool — they never replace
+// it, and they are scoped to the OIDC client only.
+func buildOIDCHTTPClient(cfg *config.Config) (*http.Client, error) {
+	extraPEM, err := loadExtraCACertificates(cfg)
+	if err != nil {
+		return nil, err
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		TLSClientConfig: &tls.Config{
+			MinVersion: tls.VersionTLS12,
+		},
+	}
+	custom := false
+
+	if len(extraPEM) > 0 {
+		roots, err := x509.SystemCertPool()
+		if err != nil || roots == nil {
+			roots = x509.NewCertPool()
+		}
+		if !roots.AppendCertsFromPEM(extraPEM) {
+			return nil, fmt.Errorf("TVZ_OIDC_CA_FILE/TVZ_OIDC_CA: no usable PEM certificate(s) found")
+		}
+		transport.TLSClientConfig.RootCAs = roots
+		custom = true
+		log.Printf("auth: OIDC client trusts extra root CA(s) (files=%v, inline=%t)",
+			cfg.OIDCCAFiles, cfg.OIDCAInline != "")
+	}
+
+	// Docker networking: rewrite the public issuer host to the Docker-internal
+	// host:port at the TCP dial level (keeps TLS/SNI and hostname validation intact).
+	if cfg.OIDCInternalHost != "" {
+		issuerURL, err := url.Parse(cfg.OIDCIssuer)
+		if err != nil {
+			return nil, fmt.Errorf("invalid OIDC issuer URL: %w", err)
+		}
+		issuerHost := issuerURL.Host
+		internalHost := cfg.OIDCInternalHost
+		transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+			if addr == issuerHost {
+				addr = internalHost
+			}
+			return (&net.Dialer{Timeout: 30 * time.Second}).DialContext(ctx, network, addr)
+		}
+		custom = true
+		log.Printf("auth: OIDC internal host rewrite %s -> %s", issuerHost, internalHost)
+	}
+
+	if !custom {
+		return http.DefaultClient, nil
+	}
+	return &http.Client{Transport: transport}, nil
+}
+
+// loadExtraCACertificates concatenates the PEM data of all extra root CA(s)
+// configured via TVZ_OIDC_CA_FILE (comma-separated file paths) and
+// TVZ_OIDC_CA (inline PEM, or base64-encoded PEM).
+func loadExtraCACertificates(cfg *config.Config) ([]byte, error) {
+	var buf bytes.Buffer
+	for _, path := range cfg.OIDCCAFiles {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("TVZ_OIDC_CA_FILE %q: %w", path, err)
+		}
+		buf.Write(data)
+		if len(data) > 0 && data[len(data)-1] != '\n' {
+			buf.WriteByte('\n')
+		}
+	}
+	if inline := strings.TrimSpace(cfg.OIDCAInline); inline != "" {
+		if !strings.Contains(inline, "-----BEGIN") {
+			// Tolerate base64-encoded PEM (e.g. `base64 -w0 ca.crt`).
+			if decoded, derr := base64.StdEncoding.DecodeString(inline); derr == nil &&
+				strings.Contains(string(decoded), "-----BEGIN") {
+				inline = string(decoded)
+			}
+		}
+		buf.WriteString(inline)
+		buf.WriteByte('\n')
+	}
+	return buf.Bytes(), nil
 }
 
 // mapGroupsToRole maps Keycloak group names to app roles.
