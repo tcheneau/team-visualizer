@@ -1,34 +1,14 @@
-version: "3.8"
-
 services:
   teamviz:
     build: .
+    # "dev" listener: X-Dev-User / X-Dev-Groups headers (see teamviz.dev.toml).
+    # Only for local testing — never expose untrusted networks to a `dev` port.
+    command: ["-config", "/etc/teamviz/teamviz.toml"]
     ports:
       - "8080:8080"
-    environment:
-      TVZ_JWT_SECRET: ${TVZ_JWT_SECRET:-dev-secret-change-me}
-      TVZ_DB_PATH: /data/teamviz.db
-      TVZ_LISTEN: ":8080"
-      # Dev mode allows local testing without Keycloak via X-Dev-User / X-Dev-Groups headers.
-      # Set to false and provide the TVZ_OIDC_* vars below to use direct Keycloak OIDC.
-      TVZ_DEV_MODE: ${TVZ_DEV_MODE:-true}
-      # OIDC (required when TVZ_DEV_MODE=false)
-      TVZ_OIDC_ISSUER: ${TVZ_OIDC_ISSUER:-}
-      TVZ_OIDC_CLIENT_ID: ${TVZ_OIDC_CLIENT_ID:-}
-      TVZ_OIDC_CLIENT_SECRET: ${TVZ_OIDC_CLIENT_SECRET:-}
-      TVZ_OIDC_REDIRECT_URL: ${TVZ_OIDC_REDIRECT_URL:-}
-      TVZ_OIDC_INTERNAL_HOST: ${TVZ_OIDC_INTERNAL_HOST:-}
-      # Optional: trust extra root CA(s) for an HTTPS OIDC provider whose cert is
-      # issued by a private/internal CA. Either mount the PEM file and point
-      # TVZ_OIDC_CA_FILE at it, e.g. add to this service:
-      #   volumes:
-      #     - ./certs/corp-root-ca.pem:/certs/corp-root-ca.pem:ro
-      # and set TVZ_OIDC_CA_FILE=/certs/corp-root-ca.pem ...
-      # ...or pass the PEM (or its base64 encoding) inline via TVZ_OIDC_CA.
-      TVZ_OIDC_CA_FILE: ${TVZ_OIDC_CA_FILE:-}
-      TVZ_OIDC_CA: ${TVZ_OIDC_CA:-}
     volumes:
       - teamviz-data:/data
+      - ./teamviz.dev.toml:/etc/teamviz/teamviz.toml:ro
     restart: unless-stopped
 
 volumes:

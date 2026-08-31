@@ -101,7 +101,7 @@ func (a *AuthService) renderAccessDenied(w http.ResponseWriter, username string,
 	page := accessDeniedPage{
 		Username:         username,
 		ReceivedGroups:   receivedGroups,
-		RecognizedGroups: []string{a.cfg.AdminGroup, a.cfg.NormalGroup, a.cfg.ReadonlyGroup},
+		RecognizedGroups: []string{a.roles.Admin, a.roles.Normal, a.roles.Readonly},
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(http.StatusForbidden)

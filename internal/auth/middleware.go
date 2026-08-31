@@ -38,7 +38,7 @@ func (a *AuthService) Middleware(next http.Handler) http.Handler {
 				Path:     "/",
 				HttpOnly: true,
 				SameSite: http.SameSiteLaxMode,
-				MaxAge:   int(a.cfg.JWTTTL.Seconds()),
+				MaxAge:   int(a.jwtTTL.Seconds()),
 			})
 		}
 

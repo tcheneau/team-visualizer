@@ -8,7 +8,6 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
-	"encoding/base64"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -143,10 +142,10 @@ func doGet(t *testing.T, client *http.Client, url string) error {
 	return nil
 }
 
-// ---- tests ----
+// ---- OIDC client TLS trust tests ----
 
 // Default (system roots only) must reject a cert from an unknown CA,
-// while TVZ_OIDC_CA (inline PEM) must make it trusted.
+// while oidc.ca (inline PEM) must make it trusted.
 func TestOIDCClientTrustsInlineCA(t *testing.T) {
 	ca := newTestCA(t)
 	baseURL := startTLSServer(t, ca.issueServerCert(t, net.ParseIP("127.0.0.1")))
@@ -157,8 +156,7 @@ func TestOIDCClientTrustsInlineCA(t *testing.T) {
 		t.Logf("default client error (expected): %v", err)
 	}
 
-	cfg := &config.Config{OIDCAInline: string(ca.pem)}
-	client, err := buildOIDCHTTPClient(cfg)
+	client, err := buildOIDCHTTPClient("test", &config.OIDC{CA: string(ca.pem)})
 	if err != nil {
 		t.Fatalf("buildOIDCHTTPClient: %v", err)
 	}
@@ -176,8 +174,7 @@ func TestOIDCClientTrustsCAFile(t *testing.T) {
 		t.Fatalf("write CA file: %v", err)
 	}
 
-	cfg := &config.Config{OIDCCAFiles: []string{caPath}}
-	client, err := buildOIDCHTTPClient(cfg)
+	client, err := buildOIDCHTTPClient("test", &config.OIDC{CAFile: caPath})
 	if err != nil {
 		t.Fatalf("buildOIDCHTTPClient: %v", err)
 	}
@@ -186,30 +183,14 @@ func TestOIDCClientTrustsCAFile(t *testing.T) {
 	}
 }
 
-func TestOIDCClientAcceptsBase64EncodedCA(t *testing.T) {
-	ca := newTestCA(t)
-	baseURL := startTLSServer(t, ca.issueServerCert(t, net.ParseIP("127.0.0.1")))
-
-	cfg := &config.Config{OIDCAInline: base64.StdEncoding.EncodeToString(ca.pem)}
-	client, err := buildOIDCHTTPClient(cfg)
-	if err != nil {
-		t.Fatalf("buildOIDCHTTPClient: %v", err)
-	}
-	if err := doGet(t, client, baseURL); err != nil {
-		t.Fatalf("request with base64 CA failed: %v", err)
-	}
-}
-
 func TestOIDCClientRejectsInvalidCAData(t *testing.T) {
-	cfg := &config.Config{OIDCAInline: "definitely-not-a-certificate"}
-	if _, err := buildOIDCHTTPClient(cfg); err == nil {
+	if _, err := buildOIDCHTTPClient("test", &config.OIDC{CA: "definitely-not-a-certificate"}); err == nil {
 		t.Fatal("expected error for invalid CA data")
 	}
 }
 
 func TestOIDCClientRejectsMissingCAFile(t *testing.T) {
-	cfg := &config.Config{OIDCCAFiles: []string{"/nonexistent/root-ca.pem"}}
-	if _, err := buildOIDCHTTPClient(cfg); err == nil {
+	if _, err := buildOIDCHTTPClient("test", &config.OIDC{CAFile: "/nonexistent/root-ca.pem"}); err == nil {
 		t.Fatal("expected error for missing CA file")
 	}
 }
@@ -217,8 +198,8 @@ func TestOIDCClientRejectsMissingCAFile(t *testing.T) {
 // ---- role mapping (fail closed) ----
 
 func TestMapGroupsToRole(t *testing.T) {
-	svc := &AuthService{cfg: &config.Config{
-		AdminGroup: "tvz-admin", NormalGroup: "tvz-normal", ReadonlyGroup: "tvz-readonly",
+	svc := &AuthService{roles: config.RoleMapping{
+		Admin: "tvz-admin", Normal: "tvz-normal", Readonly: "tvz-readonly",
 	}}
 	cases := []struct {
 		name   string
@@ -247,8 +228,9 @@ func TestMapGroupsToRole(t *testing.T) {
 	}
 }
 
-// Dev headers with no recognized group must be denied (fail closed) and the
-// user must not be persisted; a recognized readonly group maps explicitly.
+// Dev-header requests with no recognized group must be denied (fail closed)
+// and the user must not be persisted; a recognized readonly group maps
+// explicitly.
 func TestAuthFromRequestDevDeniesUnmappedGroups(t *testing.T) {
 	db, err := store.New(filepath.Join(t.TempDir(), "test.db"))
 	if err != nil {
@@ -256,30 +238,21 @@ func TestAuthFromRequestDevDeniesUnmappedGroups(t *testing.T) {
 	}
 	defer db.Close()
 
-	cfg := &config.Config{
-		DevMode:       true,
-		JWTSecret:     []byte("test-secret"),
-		AdminGroup:    "tvz-admin",
-		NormalGroup:   "tvz-normal",
-		ReadonlyGroup: "tvz-readonly",
-	}
-	svc := New(cfg, db)
+	svc := New(config.Listener{
+		Name:    "dev-test",
+		Listen:  ":0",
+		Auth:    config.AuthModeDev,
+		Headers: config.Headers{User: "X-Dev-User", Groups: "X-Dev-Groups"},
+		Roles: config.RoleMapping{
+			Admin: "tvz-admin", Normal: "tvz-normal", Readonly: "tvz-readonly",
+		},
+	}, config.Server{JWTSecret: "test-secret", JWTTTL: time.Hour}, db)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/auth/session", nil)
-	req.Header.Set("X-Dev-User", "bob")
-	req.Header.Set("X-Dev-Groups", "tvz-readonly")
-	user, _, err := svc.AuthFromRequest(req)
-	if err != nil {
-		t.Fatalf("readonly member denied: %v", err)
-	}
-	if user.Role != model.RoleReadonly {
-		t.Fatalf("role = %q, want readonly", user.Role)
-	}
-
-	req2 := httptest.NewRequest(http.MethodGet, "/api/people", nil)
-	req2.Header.Set("X-Dev-User", "mallory")
-	req2.Header.Set("X-Dev-Groups", "unrelated-group")
-	if _, _, err := svc.AuthFromRequest(req2); !errors.Is(err, ErrAccessDenied) {
+	// Unrecognized group → denied, no user row created.
+	req := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	req.Header.Set("X-Dev-User", "mallory")
+	req.Header.Set("X-Dev-Groups", "unrelated-group")
+	if _, _, err := svc.AuthFromRequest(req); !errors.Is(err, ErrAccessDenied) {
 		t.Fatalf("want ErrAccessDenied, got %v", err)
 	}
 	if _, err := db.GetUser("mallory"); err == nil {
@@ -287,9 +260,71 @@ func TestAuthFromRequestDevDeniesUnmappedGroups(t *testing.T) {
 	}
 }
 
+// "headers" mode reads the listener-configured header names and maps roles.
+func TestAuthFromRequestHeadersMode(t *testing.T) {
+	db, err := store.New(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	defer db.Close()
+
+	svc := New(config.Listener{
+		Name:   "kerberos-test",
+		Listen: "127.0.0.1:0",
+		Auth:   config.AuthModeHeaders,
+		Headers: config.Headers{
+			User: "X-Remote-User", Groups: "X-Remote-Groups",
+		},
+		Roles: config.RoleMapping{
+			Admin: "server-admins", Normal: "staff", Readonly: "all-staff",
+		},
+	}, config.Server{JWTSecret: "test-secret", JWTTTL: time.Hour}, db)
+
+	// No headers at all → no authentication (401 upstream), NOT a denial.
+	req := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	if _, _, err := svc.AuthFromRequest(req); !errors.Is(err, ErrNoAuth) {
+		t.Fatalf("want ErrNoAuth for headerless request, got %v", err)
+	}
+
+	// Mapped headers (Kerberos/Lua style) → readonly session.
+	req2 := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	req2.Header.Set("X-Remote-User", "jdoe")
+	req2.Header.Set("X-Remote-Groups", "other-staff,all-staff")
+	user, _, err := svc.AuthFromRequest(req2)
+	if err != nil {
+		t.Fatalf("headers auth failed: %v", err)
+	}
+	if user.Role != model.RoleReadonly {
+		t.Fatalf("role = %q, want readonly", user.Role)
+	}
+
+	// Mapped admin group wins over readonly.
+	req3 := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	req3.Header.Set("X-Remote-User", "chief")
+	req3.Header.Set("X-Remote-Groups", "all-staff,server-admins")
+	user3, _, err := svc.AuthFromRequest(req3)
+	if err != nil {
+		t.Fatalf("headers auth failed: %v", err)
+	}
+	if user3.Role != model.RoleAdmin {
+		t.Fatalf("role = %q, want admin", user3.Role)
+	}
+
+	// Present headers but no recognized group → denied.
+	req4 := httptest.NewRequest(http.MethodGet, "/api/people", nil)
+	req4.Header.Set("X-Remote-User", "intruder")
+	req4.Header.Set("X-Remote-Groups", "not-ours")
+	if _, _, err := svc.AuthFromRequest(req4); !errors.Is(err, ErrAccessDenied) {
+		t.Fatalf("want ErrAccessDenied for unmapped headers user, got %v", err)
+	}
+	if _, err := db.GetUser("intruder"); err == nil {
+		t.Fatal("denied user must not be persisted")
+	}
+}
+
 func TestRenderAccessDeniedPage(t *testing.T) {
-	svc := &AuthService{cfg: &config.Config{
-		AdminGroup: "tvz-admin", NormalGroup: "tvz-normal", ReadonlyGroup: "tvz-readonly",
+	svc := &AuthService{roles: config.RoleMapping{
+		Admin: "tvz-admin", Normal: "tvz-normal", Readonly: "tvz-readonly",
 	}}
 	rec := httptest.NewRecorder()
 	svc.renderAccessDenied(rec, `<script>alert(1)</script>`, []string{"weird & group"})
@@ -314,7 +349,7 @@ func TestRenderAccessDeniedPage(t *testing.T) {
 // TestDemoCertsIntegration validates the PKI produced by
 // scripts/generate-demo-certs.sh (the docker-compose demo certificates)
 // against the real OIDC client: system roots must reject the demo leaf,
-// the demo root CA via TVZ_OIDC_CA_FILE must accept it.
+// the demo root CA via oidc.ca_file must accept it.
 //
 // Enable with: CERTS_DIR=/path/to/certs go test ./internal/auth -run TestDemoCertsIntegration
 func TestDemoCertsIntegration(t *testing.T) {
@@ -338,8 +373,7 @@ func TestDemoCertsIntegration(t *testing.T) {
 		t.Logf("system roots error (expected): %v", err)
 	}
 
-	cfg := &config.Config{OIDCCAFiles: []string{filepath.Join(dir, "root-ca.pem")}}
-	client, err := buildOIDCHTTPClient(cfg)
+	client, err := buildOIDCHTTPClient("demo", &config.OIDC{CAFile: filepath.Join(dir, "root-ca.pem")})
 	if err != nil {
 		t.Fatalf("buildOIDCHTTPClient: %v", err)
 	}

@@ -100,18 +100,22 @@ func TestCallbackHandlerRoleFlow(t *testing.T) {
 	defer db.Close()
 
 	idp := newMockIDP(t)
-	cfg := &config.Config{
-		JWTTTL:           time.Hour,
-		JWTSecret:        []byte("test-secret"),
-		OIDCIssuer:       idp.issuer,
-		OIDCClientID:     "teamviz-demo",
-		OIDCClientSecret: "shh",
-		OIDCRedirectURL:  "http://localhost:8080/auth/callback",
-		AdminGroup:       "tvz-admin",
-		NormalGroup:      "tvz-normal",
-		ReadonlyGroup:    "tvz-readonly",
+	ln := config.Listener{
+		Name:   "callback-test",
+		Listen: ":0",
+		Auth:   config.AuthModeOIDC,
+		OIDC: config.OIDC{
+			Issuer:       idp.issuer,
+			ClientID:     "teamviz-demo",
+			ClientSecret: "shh",
+			RedirectURL:  "http://localhost:8080/auth/callback",
+		},
+		Roles: config.RoleMapping{
+			Admin: "tvz-admin", Normal: "tvz-normal", Readonly: "tvz-readonly",
+		},
 	}
-	svc := New(cfg, db)
+	serverCfg := config.Server{JWTTTL: time.Hour, JWTSecret: "test-secret"}
+	svc := New(ln, serverCfg, db)
 
 	doCallback := func(username string, groups []string) *httptest.ResponseRecorder {
 		idp.issue(map[string]any{

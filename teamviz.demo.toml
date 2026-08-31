@@ -1,0 +1,27 @@
+# Team Visualizer — demo configuration (mounted into the teamviz container
+# by docker-compose.demo.yml, used via: -config /etc/teamviz/teamviz.toml)
+
+[server]
+db_path    = "/data/teamviz.db"
+jwt_secret = "demo-jwt-secret-not-for-production"
+
+[[listener]]
+name    = "keycloak-demo-https"
+listen  = ":8080"
+auth    = "oidc"
+
+  [listener.oidc]
+  # Keycloak realm behind its own TLS listener (ephemeral demo CA).
+  # Docker-internal calls are redirected to keycloak:8443 at the TCP dial
+  # level; TLS/SNI + hostname validation stay on "localhost" (cert SAN).
+  issuer        = "https://localhost:8443/realms/teamviz"
+  client_id     = "teamviz-demo"
+  client_secret = "demo-secret-not-for-production-use"
+  redirect_url  = "http://localhost:8080/auth/callback"
+  internal_host = "keycloak:8443"
+  ca_file       = "/certs/root-ca.pem"
+
+  [listener.roles]
+  admin    = "tvz-admin"
+  normal   = "tvz-normal"
+  readonly = "tvz-readonly"

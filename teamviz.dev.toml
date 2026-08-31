@@ -1,0 +1,11 @@
+# Team Visualizer — standalone dev configuration (docker-compose.yml).
+# "dev" authenticates anyone via X-Dev-User / X-Dev-Groups headers;
+# never expose such a listener untrusted networks.
+
+[server]
+db_path    = "/data/teamviz.db"
+jwt_secret = "dev-secret-change-me"
+
+[[listener]]
+listen = ":8080"
+auth   = "dev"

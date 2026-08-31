@@ -2,13 +2,15 @@
 # End-to-end API test for Team Activity Visualizer
 
 set -e
-BASE_URL="http://localhost:8080"
+PORT="${TEST_PORT:-8080}"
+BASE_URL="http://localhost:${PORT}"
 ADMIN="-H X-Dev-User:admin -H X-Dev-Groups:admin"
 NORMAL="-H X-Dev-User:alice -H X-Dev-Groups:normal"
 RO="-H X-Dev-User:bob -H X-Dev-Groups:readonly"
 PASS=0; FAIL=0; PID=""
+CONFIG=$(mktemp /tmp/teamviz-test-XXXXXX.toml)
 
-cleanup() { [ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -f teamviz.db*; }
+cleanup() { [ -n "$PID" ] && kill "$PID" 2>/dev/null; rm -f teamviz-test.db* "$CONFIG"; }
 trap cleanup EXIT
 
 ok()   { echo "  PASS: $1"; PASS=$((PASS+1)); }
@@ -17,7 +19,17 @@ eq()   { [ "$2" = "$3" ] && ok "$1" || fail "$1 (got '$2', want '$3')"; }
 code() { eq "$1" "$2" "$3"; }
 
 echo "=== Starting server ==="
-TVZ_JWT_SECRET=testsecret TVZ_DEV_MODE=true /tmp/teamviz &
+echo "=== Starting server ==="
+cat > "$CONFIG" <<EOF
+[server]
+db_path    = "teamviz-test.db"
+jwt_secret = "testsecret"
+
+[[listener]]
+listen = ":${PORT}"
+auth   = "dev"
+EOF
+/tmp/teamviz -config "$CONFIG" &
 PID=$!; sleep 1
 
 echo "=== Foundation ==="
@@ -94,7 +106,8 @@ echo "=== Role Enforcement ==="
 code "RO blocked" "$(curl -s -o /dev/null -w '%{http_code}' $RO -X POST -H 'Content-Type: application/json' -d '{"name":"X"}' $BASE_URL/api/people)" "403"
 code "Normal add" "$(curl -s -o /dev/null -w '%{http_code}' $NORMAL -X POST -H 'Content-Type: application/json' -d '{"name":"NUser","is_guest":false,"status":"active","archived_date":""}' $BASE_URL/api/people)" "201"
 code "Admin settings" "$(curl -s -o /dev/null -w '%{http_code}' $ADMIN -X PUT -H 'Content-Type: application/json' -d '{"window_weeks":"3"}' $BASE_URL/api/settings)" "200"
-code "Normal settings" "$(curl -s -o /dev/null -w '%{http_code}' $NORMAL -X PUT -H 'Content-Type: application/json' -d '{"window_weeks":"2"}' $BASE_URL/api/settings)" "403"
+code "Normal operational settings" "$(curl -s -o /dev/null -w '%{http_code}' $NORMAL -X PUT -H 'Content-Type: application/json' -d '{"window_weeks":"2"}' $BASE_URL/api/settings)" "200"
+code "Normal admin-only settings" "$(curl -s -o /dev/null -w '%{http_code}' $NORMAL -X PUT -H 'Content-Type: application/json' -d '{"prune_weeks":"6"}' $BASE_URL/api/settings)" "403"
 
 echo "=== Cleanup ==="
 curl -s $ADMIN -X DELETE $BASE_URL/api/people/$PID1 > /dev/null

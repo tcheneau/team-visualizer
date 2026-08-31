@@ -1,0 +1,88 @@
+# teamviz.example.toml — complete example of the Team Visualizer configuration.
+# Start with:  ./teamviz -config teamviz.example.toml
+#
+# One process serves several listeners, each with its own authentication:
+#
+#   :8080  OIDC against the corporate Keycloak           (browser + SPA)
+#   :8081  OIDC against a partner Keycloak               (separate realm)
+#   :8082  Kerberos via Apache mod_auth_gssapi           (headers, internal)
+#   :8083  dev (X-Dev-User headers)                      (local testing only)
+#
+# All listeners share one database and one WebSocket hub: a person active on
+# one port appears in real time for users of the other ports.
+#
+# Secrets are referenced from the environment with ${VAR} and resolved at
+# startup — ${VAR} that is not set aborts the launch. $${…} escapes a
+# literal "${…}".
+
+[server]
+db_path    = "/data/teamviz.db"
+jwt_secret = "${TEAMVIZ_JWT_SECRET}"
+jwt_ttl    = "24h"          # session lifetime (also the cookie Max-Age)
+ws_enabled = true           # real-time updates
+
+[roles]                     # global group→role mapping
+admin    = "tvz-admin"
+normal   = "tvz-normal"
+readonly = "tvz-readonly"
+
+# ---------------------------------------------------------------------------
+[[listener]]
+name   = "keycloak-corp"
+listen = ":8080"
+auth   = "oidc"
+
+  [listener.oidc]
+  issuer        = "https://kc.corp.example.com/realms/teamviz"
+  client_id     = "teamviz"
+  client_secret = "${KC_CORP_CLIENT_SECRET}"
+  redirect_url  = "https://tvz.corp.example.com/auth/callback"
+  # Docker-internal rewrite of the issuer host for backend calls:
+  # internal_host = "keycloak:8080"
+  # Extra root CA(s) for a private PKI (appended to the system pool):
+  # ca_file = "/certs/corp-root-ca.pem"
+  # ca      = """-----BEGIN CERTIFICATE-----
+  #         ...
+  #         -----END CERTIFICATE-----"""
+  # scopes = ["openid", "email", "profile"]
+
+# ---------------------------------------------------------------------------
+[[listener]]
+name    = "keycloak-partner"
+listen  = ":8081"
+auth    = "oidc"
+
+  [listener.oidc]
+  issuer        = "https://kc.partner.example.com/realms/teamviz"
+  client_id     = "teamviz-partner"
+  client_secret = "${KC_PARTNER_CLIENT_SECRET}"
+  redirect_url  = "https://tvz.partner.example.com/auth/callback"
+
+  [listener.roles]              # per-listener group→role override
+  admin = "partner-admins"
+
+# ---------------------------------------------------------------------------
+# Kerberos listener: Apache (mod_auth_gssapi + apache/group_lookup.lua)
+# validates the SPNEGO ticket, maps AD groups via LDAP, and forwards the
+# identity headers to this port. Bind to an address only the proxy reaches!
+[[listener]]
+name    = "kerberos"
+listen  = "127.0.0.1:8082"
+auth    = "headers"
+
+  [listener.headers]
+  user   = "X-Dev-User"
+  groups = "X-Dev-Groups"
+
+  [listener.roles]
+  admin    = "server-admins"
+  readonly = "all-staff"
+
+# ---------------------------------------------------------------------------
+[[listener]]
+name    = "local-dev"
+listen  = ":8083"
+auth    = "dev"                 # X-Dev-User / X-Dev-Groups, no provider check
+
+  [listener.roles]
+  admin = "admin"
